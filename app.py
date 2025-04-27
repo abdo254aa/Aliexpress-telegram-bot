@@ -1,3 +1,4 @@
+user_language = {}
 import logging
 import os
 import re
