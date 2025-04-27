@@ -559,7 +559,6 @@ def _build_reply_markup() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("💻 GitHub", url="https://github.com/ReizoZ"),
-            InlineKeyboardButton("🎮 Discord", url="https://discord.gg/9QzECYfmw8"),
             InlineKeyboardButton("📱 Channel", url="https://t.me/Aliexpress_Deal_Dz")
         ],
         [
