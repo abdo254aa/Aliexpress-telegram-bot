@@ -318,4 +318,9 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         }
         await product_cache.set(product_id, product_info)
         expiry_date = datetime.now() + timedelta(days=CACHE_EXPIRY_DAYS)
-        logger.info(f"Cached product {product_id} from API until {
+        logger.info(f"Cached product {product_id} from API until {expiry_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        return product_info
+
+    except Exception as e:
+        logger.error(f"Error parsing API response for {product_id}: {e}")
+        return None
