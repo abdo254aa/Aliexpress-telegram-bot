@@ -44,7 +44,7 @@ def self_ping():
 
         try:
 
-            requests.get("https://aliexpress-telegram-bot-ggnt.onrender.com")  
+            requests.get("https://aliexpress-telegram-bot-1-g21h.onrender.com")  
 
             print(" hello world ")
 
