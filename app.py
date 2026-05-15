@@ -31,9 +31,9 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ALIEXPRESS_APP_KEY = os.getenv('ALIEXPRESS_APP_KEY')
 ALIEXPRESS_APP_SECRET = os.getenv('ALIEXPRESS_APP_SECRET')
-TARGET_CURRENCY = os.getenv('TARGET_CURRENCY', 'USD')  # Still used for API
-TARGET_LANGUAGE = os.getenv('TARGET_LANGUAGE', 'en')  # Still used for API
-QUERY_COUNTRY = os.getenv('QUERY_COUNTRY', 'US')  # Still used for API
+TARGET_CURRENCY = os.getenv('TARGET_CURRENCY', 'USD')
+TARGET_LANGUAGE = os.getenv('TARGET_LANGUAGE', 'en')
+QUERY_COUNTRY = os.getenv('QUERY_COUNTRY', 'US')
 ALIEXPRESS_TRACKING_ID = os.getenv('ALIEXPRESS_TRACKING_ID', 'default')
 ALIEXPRESS_API_URL = 'https://api-sg.aliexpress.com/sync'
 QUERY_FIELDS = 'product_main_image_url,target_sale_price,product_title,target_sale_price_currency'
@@ -318,4 +318,163 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         }
         await product_cache.set(product_id, product_info)
         expiry_date = datetime.now() + timedelta(days=CACHE_EXPIRY_DAYS)
-        logger.info(f"Cached product {product_id} from API until {
+        logger.info(f"Cached product {product_id} from API until {expiry_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        return product_info
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error for product {product_id}: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Error parsing product details response for ID {product_id}: {e}")
+        return None
+
+# --- Generate Affiliate Links ---
+async def generate_affiliate_links(product_id: str, base_url: str) -> dict:
+    links = {}
+    cache_key = f"links_{product_id}"
+    cached_links = await link_cache.get(cache_key)
+    if cached_links:
+        logger.info(f"Cache hit for affiliate links: {product_id}")
+        return cached_links
+
+    for offer_name in OFFER_ORDER:
+        offer_config = OFFER_PARAMS.get(offer_name)
+        if offer_config:
+            params = offer_config.get("params", {})
+            link = build_url_with_offer_params(base_url, params)
+            if link:
+                links[offer_name] = link
+
+    if links:
+        await link_cache.set(cache_key, links)
+        logger.info(f"Generated and cached affiliate links for product {product_id}")
+
+    return links
+
+# --- Format Message ---
+def format_message(product_info: dict, links: dict) -> str:
+    title = html.escape(product_info.get('title', 'منتج غير معروف'))
+    price = product_info.get('price')
+    currency = product_info.get('currency', '')
+
+    price_text = f"💰 <b>السعر:</b> {html.escape(str(price))} {html.escape(currency)}" if price else "💰 <b>السعر:</b> غير متوفر"
+
+    link_lines = []
+    link_labels = {
+        "coin": "🪙 عروض الكوين",
+        "super": "🔥 سوبر ديلز",
+        "limited": "⏰ عروض محدودة",
+        "choice": "⭐ اختيار علي إكسبريس",
+    }
+    for offer_name in OFFER_ORDER:
+        if offer_name in links:
+            label = link_labels.get(offer_name, offer_name)
+            link_lines.append(f'<a href="{links[offer_name]}">{label}</a>')
+
+    links_text = "\n".join(link_lines) if link_lines else "لا توجد روابط متاحة"
+
+    message = (
+        f"🛍️ <b>{title}</b>\n\n"
+        f"{price_text}\n\n"
+        f"🔗 <b>روابط الشراء:</b>\n{links_text}"
+    )
+    return message
+
+# --- Handle Message ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text
+    chat_id = update.message.chat_id
+    message_id = update.message.message_id
+
+    potential_urls = extract_potential_aliexpress_urls(text)
+    if not potential_urls:
+        return
+
+    aliexpress_urls = [url for url in potential_urls if COMBINED_DOMAIN_REGEX.search(url)]
+    if not aliexpress_urls:
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+    async with aiohttp.ClientSession() as session:
+        for url in aliexpress_urls[:1]:
+            try:
+                final_url = url
+                if SHORT_LINK_DOMAIN_REGEX.match(url):
+                    final_url = await resolve_short_link(url, session)
+                    if not final_url:
+                        logger.warning(f"Could not resolve short link: {url}")
+                        continue
+
+                product_id = extract_product_id(final_url)
+                if not product_id:
+                    logger.warning(f"Could not extract product ID from: {final_url}")
+                    continue
+
+                base_url = clean_aliexpress_url(final_url, product_id)
+                if not base_url:
+                    continue
+
+                product_info = await fetch_product_details_v2(product_id)
+                if not product_info:
+                    logger.warning(f"Could not fetch product details for ID: {product_id}")
+                    continue
+
+                links = await generate_affiliate_links(product_id, base_url)
+                message_text = format_message(product_info, links)
+                image_url = product_info.get('image_url')
+
+                if image_url:
+                    try:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=image_url,
+                            caption=message_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_to_message_id=message_id
+                        )
+                    except Exception as photo_err:
+                        logger.warning(f"Failed to send photo, sending text only: {photo_err}")
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=message_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_to_message_id=message_id,
+                            disable_web_page_preview=False
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_to_message_id=message_id,
+                        disable_web_page_preview=False
+                    )
+
+            except Exception as e:
+                logger.exception(f"Error processing URL {url}: {e}")
+
+# --- Start Command ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "👋 مرحباً! أرسل لي أي رابط منتج من AliExpress وسأولّد لك روابط تابعة متعددة! 🛍️"
+    )
+
+# --- Main ---
+def main() -> None:
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    job_queue = application.job_queue
+    job_queue.run_repeating(periodic_cache_cleanup, interval=3600, first=3600)
+
+    logger.info("Bot started successfully!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
