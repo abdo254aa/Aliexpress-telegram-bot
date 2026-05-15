@@ -1,3 +1,4 @@
+# --- START OF MODIFIED app.py (Arabic Only, All Bold) ---
 import logging
 import os
 import re
@@ -520,5 +521,4 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # --- تشغيل البوت عند استدعاء الملف ---
 if __name__ == "__main__":
     main()
-# 
-```
+# --- END OF MODIFIED app.py ---
