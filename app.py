@@ -1,3 +1,4 @@
+# --- START OF CLEANED & FINAL app.py WITH USD ---
 import logging
 import os
 import re
@@ -22,7 +23,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatAction
 
 import iop
-# تأكد من وجود ملف aliexpress_utils.py في نفس المجلد
+# تأكد من وجود ملف aliexpress_utils.py المطور بجانب هذا الملف
 from aliexpress_utils import get_product_details_by_id
 
 load_dotenv()
@@ -47,9 +48,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- Check Environment Variables ---
 if not all([TELEGRAM_BOT_TOKEN, ALIEXPRESS_APP_KEY, ALIEXPRESS_APP_SECRET, ALIEXPRESS_TRACKING_ID]):
@@ -83,8 +81,7 @@ OFFER_PARAMS = {
 }
 OFFER_ORDER = ["coin", "super", "limited", "choice"]
 
-
-# --- Cache class ---
+# --- Cache Class ---
 class CacheWithExpiry:
     def __init__(self, expiry_seconds):
         self.cache = {}
@@ -122,42 +119,31 @@ product_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 link_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
-# --- Helper functions ---
+# --- Helper Functions ---
 async def resolve_short_link(short_url: str, session: aiohttp.ClientSession) -> str | None:
     cached_final_url = await resolved_url_cache.get(short_url)
-    if cached_final_url:
-        return cached_final_url
-
+    if cached_final_url: return cached_final_url
     try:
         async with session.get(short_url, allow_redirects=True, timeout=10) as response:
             if response.status == 200 and response.url:
                 final_url = str(response.url)
-                if '.aliexpress.us' in final_url:
-                    final_url = final_url.replace('.aliexpress.us', '.aliexpress.com')
-                if '_randl_shipto=' in final_url:
-                     final_url = re.sub(r'_randl_shipto=[^&]+', f'_randl_shipto={QUERY_COUNTRY}', final_url)
-                
+                if '.aliexpress.us' in final_url: final_url = final_url.replace('.aliexpress.us', '.aliexpress.com')
+                if '_randl_shipto=' in final_url: final_url = re.sub(r'_randl_shipto=[^&]+', f'_randl_shipto={QUERY_COUNTRY}', final_url)
                 product_id = extract_product_id(final_url)
                 if STANDARD_ALIEXPRESS_DOMAIN_REGEX.match(final_url) and product_id:
                     await resolved_url_cache.set(short_url, final_url)
                     return final_url
-                return None
             return None
-    except Exception as e:
-        logger.error(f"Error resolving short link {short_url}: {e}")
-        return None
+    except Exception: return None
 
 def extract_product_id(url: str) -> str | None:
-    if '.aliexpress.us' in url:
-        url = url.replace('.aliexpress.us', '.aliexpress.com')
+    if '.aliexpress.us' in url: url = url.replace('.aliexpress.us', '.aliexpress.com')
     match = PRODUCT_ID_REGEX.search(url)
-    if match:
-        return match.group(1)
+    if match: return match.group(1)
     alt_patterns = [r'/p/[^/]+/([0-9]+)\.html', r'product/([0-9]+)']
     for pattern in alt_patterns:
         alt_match = re.search(pattern, url)
-        if alt_match:
-            return alt_match.group(1)
+        if alt_match: return alt_match.group(1)
     return None
 
 def extract_potential_aliexpress_urls(text: str) -> list[str]:
@@ -167,22 +153,17 @@ def clean_aliexpress_url(url: str, product_id: str) -> str | None:
     try:
         parsed_url = urlparse(url)
         path_segment = f'/item/{product_id}.html'
-        netloc = "www.aliexpress.com"
-        return urlunparse((parsed_url.scheme or 'https', netloc, path_segment, '', '', ''))
-    except ValueError:
-        return None
+        return urlunparse((parsed_url.scheme or 'https', "www.aliexpress.com", path_segment, '', '', ''))
+    except ValueError: return None
 
 def build_url_with_offer_params(base_url: str, params_to_add: dict) -> str | None:
-    if not params_to_add:
-        return base_url
+    if not params_to_add: return base_url
     try:
         parsed_base = urlparse(base_url)
-        query_string_for_redirect = urlencode(params_to_add)
-        redirect_url = urlunparse((parsed_base.scheme, parsed_base.netloc, parsed_base.path, '', query_string_for_redirect, ''))
+        redirect_url = urlunparse((parsed_base.scheme, parsed_base.netloc, parsed_base.path, '', urlencode(params_to_add), ''))
         final_params = {"platform": "AE", "businessType": "ProductDetail", "redirectUrl": redirect_url}
         return urlunparse(('https', 'star.aliexpress.com', '/share/share.htm', '', urlencode(final_params), ''))
-    except ValueError:
-        return base_url
+    except ValueError: return base_url
 
 async def periodic_cache_cleanup(context: ContextTypes.DEFAULT_TYPE):
     await product_cache.clear_expired()
@@ -192,8 +173,7 @@ async def periodic_cache_cleanup(context: ContextTypes.DEFAULT_TYPE):
 # --- Fetch Product Details ---
 async def fetch_product_details_v2(product_id: str) -> dict | None:
     cached_data = await product_cache.get(product_id)
-    if cached_data:
-        return cached_data
+    if cached_data: return cached_data
 
     def _execute_api_call():
         try:
@@ -205,30 +185,22 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
             request.add_api_param('tracking_id', ALIEXPRESS_TRACKING_ID)
             request.add_api_param('country', QUERY_COUNTRY)
             return aliexpress_client.execute(request)
-        except Exception:
-            return None
+        except Exception: return None
 
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(executor, _execute_api_call)
-
-    if not response or not response.body:
-        return None
+    if not response or not response.body: return None
 
     try:
         response_data = response.body
         if isinstance(response_data, str): response_data = json.loads(response_data)
-
-        if 'error_response' in response_data:
-            return None
+        if 'error_response' in response_data: return None
 
         result = response_data.get('aliexpress_affiliate_productdetail_get_response', {}).get('resp_result', {})
-        if result.get('resp_code') != 200:
-             return None
+        if result.get('resp_code') != 200: return None
 
         products = result.get('result', {}).get('products', {}).get('product', [])
-
         if not products:
-            # Scrape Fallback
             try:
                  scraped_name, scraped_image = await loop.run_in_executor(executor, get_product_details_by_id, product_id)
                  if scraped_name:
@@ -236,8 +208,7 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
                       await product_cache.set(product_id, product_info)
                       return product_info
                  return None
-            except Exception:
-                return None
+            except Exception: return None
 
         product_data = products[0]
         product_info = {
@@ -249,18 +220,14 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         }
         await product_cache.set(product_id, product_info)
         return product_info
-    except Exception:
-        return None
+    except Exception: return None
 
 async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, str | None]:
     results_dict = {url: await link_cache.get(url) for url in target_urls}
     uncached_urls = [url for url, cached in results_dict.items() if not cached]
-
-    if not uncached_urls:
-        return results_dict
+    if not uncached_urls: return results_dict
 
     source_values_str = ",".join(uncached_urls)
-
     def _execute_batch_link_api():
         try:
             request = iop.IopRequest('aliexpress.affiliate.link.generate')
@@ -268,19 +235,15 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
             request.add_api_param('source_values', source_values_str)
             request.add_api_param('tracking_id', ALIEXPRESS_TRACKING_ID)
             return aliexpress_client.execute(request)
-        except Exception:
-            return None
+        except Exception: return None
 
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(executor, _execute_batch_link_api)
-
-    if not response or not response.body:
-        return results_dict
+    if not response or not response.body: return results_dict
 
     try:
         response_data = response.body
         if isinstance(response_data, str): response_data = json.loads(response_data)
-
         links_data = response_data.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
         
         api_returned_links_map = {}
@@ -288,8 +251,7 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
             if isinstance(link_info, dict):
                 src = link_info.get('source_value')
                 promo = link_info.get('promotion_link')
-                if src and promo:
-                    api_returned_links_map[src] = promo
+                if src and promo: api_returned_links_map[src] = promo
 
         for url in uncached_urls:
             if url in api_returned_links_map:
@@ -297,29 +259,16 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
                 results_dict[url] = promo_link
                 await link_cache.set(url, promo_link)
         return results_dict
-    except Exception:
-        return results_dict
+    except Exception: return results_dict
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_message = """<b>
-👋 مرحبًا بك في بوت تخفيضات AliExpress! 🛍
-
-🔍 كيفية الاستخدام ⬇️:
-1️⃣ انسخ رابط منتجك من AliExpress 📋
-2️⃣ أرسل الرابط هنا 📤
-3️⃣ وأحصل على أفضل سعر لمنتجك🌟📦
-
-🔗 يدعم الروابط العادية والقصيرة.
-
- 🚀 أرسل رابط المنتج للبدء ! 🎁
-</b>"""
+    welcome_message = """<b>👋 مرحبًا بك في بوت تخفيضات AliExpress!\n\n🔍 كيفية الاستخدام ⬇️:\n1️⃣ انسخ رابط منتجك من AliExpress 📋\n2️⃣ أرسل الرابط هنا 📤\n3️⃣ وأحصل على أفضل سعر لمنتجك🌟📦\n\n🚀 أرسل رابط المنتج للبدء ! 🎁</b>"""
     await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
 
 async def _get_product_data(product_id: str) -> tuple[dict | None, str]:
     product_details = await fetch_product_details_v2(product_id)
-    if product_details:
-        return product_details, product_details.get('source', 'API')
+    if product_details: return product_details, product_details.get('source', 'API')
     return {'title': f"منتج {product_id}", 'image_url': None, 'price': None, 'currency': TARGET_CURRENCY, 'source': 'None'}, "None"
 
 async def _generate_offer_links(base_url: str) -> dict[str, str | None]:
@@ -332,15 +281,12 @@ async def _generate_offer_links(base_url: str) -> dict[str, str | None]:
                 target_urls_map[offer_key] = target_url
                 urls_to_fetch.append(target_url)
 
-    if not urls_to_fetch:
-        return {}
-
+    if not urls_to_fetch: return {}
     all_links_dict = await generate_affiliate_links_batch(urls_to_fetch)
     return {offer_key: all_links_dict.get(target_url) for offer_key, target_url in target_urls_map.items()}
 
-# --- دالة بناء الرسالة وحساب الفروقات بعد التعديل الجذري ---
 def _build_response_message(product_data: dict, generated_links: dict) -> str:
-    """Builds the Arabic response message string with rounded prices and differences, all bold."""
+    """Builds the Arabic response message string exactly as the user's template image."""
     import html
     message_lines = []
     product_title = html.escape(product_data.get('title', 'منتج غير معروف'))
@@ -348,9 +294,7 @@ def _build_response_message(product_data: dict, generated_links: dict) -> str:
     message_lines.append(f"<b>📝 إسم المنتج : {product_title[:250]}</b>")
     message_lines.append("<b>\n✳️ قارن الأسعار واكتشف أرخص سعر للمنتج ⬇️🤩\n</b>")
 
-    # معالجة السعر الأساسي المسترجع من الـ API
     base_price_raw = product_data.get('price')
-    currency = product_data.get('currency', 'USD')
     
     base_price = None
     if base_price_raw:
@@ -359,53 +303,39 @@ def _build_response_message(product_data: dict, generated_links: dict) -> str:
         except ValueError:
             base_price = None
 
-    # بناء مصفوفة الأسعار بناءً على السعر الأساسي ومحاكاة خصم العملات (15% خصم تقريباً كما في مثالك)
-    offers_info = {}
-    if base_price:
-        offers_info = {
-            "coin":    {"price": round(base_price * 0.85, 2), "label": "🟨 رابط الشراء بالعملات 🥇 بـ :"},
-            "super":   {"price": round(base_price, 2),        "label": "🟥 المنتج في SuperDeals 🚀 بـ :"},
-            "limited": {"price": round(base_price, 2),        "label": "⏰ المنتج في العرض المحدود بـ :"},
-            "choice":  {"price": round(base_price, 2),        "label": "🏆  المنتج في عرض  choice🌟 بـ :"},
+    # بناء وتنسيق الأسعار مع إضافة رمز الدولار $ والتأكيد على خانتين عشريتين
+    if base_price is not None:
+        coin_price = f"{round(base_price * 0.85, 2):.2f}"  # خصم تقديري للعملات
+        super_price = f"{round(base_price, 2):.2f}"
+        limited_price = f"{round(base_price, 2):.2f}"
+        choice_price = f"{round(base_price, 2):.2f}"
+
+        offers_formatting = {
+            "coin":    f"<b>🟨 رابط الشراء بالعملات 🥇بـ : ({coin_price} $) 🔥</b>",
+            "super":   f"<b>🟥 المنتج في SuperDeals 🚀 بـ : ({super_price} $) 🔥</b>",
+            "limited": f"<b>⏰ المنتج في العرض المحدود بـ : ({limited_price} $) 🔥</b>",
+            "choice":  f"<b>🏆  المنتج في عرض  choice🌟بـ : ({choice_price} $) 🔥</b>",
         }
     else:
-        offers_info = {
-            "coin":    {"price": None, "label": "🟨 رابط الشراء بالعملات 🥇 :"},
-            "super":   {"price": None, "label": "🟥 المنتج في SuperDeals 🚀 :"},
-            "limited": {"price": None, "label": "⏰ المنتج في العرض المحدود :"},
-            "choice":  {"price": None, "label": "🏆  المنتج في عرض  choice🌟 :"},
+        offers_formatting = {
+            "coin":    "<b>🟨 رابط الشراء بالعملات 🥇 :</b>",
+            "super":   "<b>🟥 المنتج في SuperDeals 🚀 :</b>",
+            "limited": "<b>⏰ المنتج في العرض المحدود :</b>",
+            "choice":  "<b>🏆  المنتج في عرض  choice🌟 :</b>",
         }
 
     offers_found = False
     for offer_key in OFFER_ORDER:
         link = generated_links.get(offer_key)
-        info = offers_info.get(offer_key)
-
-        if link and info:
-            label = info["label"]
-            price = info["price"]
-
-            if price is not None:
-                if offer_key == "coin":
-                    # عرض العملات هو الأقل دائماً وفقاً للمحاكاة الرياضية
-                    message_lines.append(f"<b>{label} ({price} {currency}) 🔥 الأرخص 📉</b>\n{link}\n")
-                else:
-                    # حساب فرق السعر بين هذا العرض وعرض العملات الأرخص
-                    coin_price = offers_info["coin"]["price"]
-                    diff = round(price - coin_price, 2) if coin_price else 0
-                    if diff > 0:
-                        message_lines.append(f"<b>{label} ({price} {currency}) 🚀 (أعلى بـ {diff}+ عن العملات)</b>\n{link}\n")
-                    else:
-                        message_lines.append(f"<b>{label} ({price} {currency})</b>\n{link}\n")
-            else:
-                # في حال عدم وجود سعر من الـ API (مثل المنتجات الممسوحة كشطاً)
-                message_lines.append(f"<b>{label}</b>\n{link}\n")
+        label = offers_formatting.get(offer_key)
+        if link and label:
+            message_lines.append(f"{label}\n{link}\n")
             offers_found = True
 
     if not offers_found:
         message_lines.append("<b>لم يتم العثور على عروض خاصة لهذا المنتج حالياً.</b>")
 
-    message_lines.append("\n<b>✅ شارك البوت مع أصدقاء ليستفيد الجميع⚡️🤖</b>")
+    message_lines.append("<b>✅ شارك البوت مع أصدقاء ليستفيد الجميع⚡️🤖</b>")
     return "\n".join(message_lines)
 
 async def _send_telegram_response(context: ContextTypes.DEFAULT_TYPE, chat_id: int, product_data: dict, message_text: str):
@@ -416,47 +346,35 @@ async def _send_telegram_response(context: ContextTypes.DEFAULT_TYPE, chat_id: i
         else:
             await context.bot.send_message(chat_id=chat_id, text=message_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=f"<b>⚠️ حدث خطأ أثناء عرض المنتج. يرجى المحاولة مرة أخرى.</b>", parse_mode=ParseMode.HTML)
-        except Exception:
-             pass
+        try: await context.bot.send_message(chat_id=chat_id, text=f"<b>⚠️ حدث خطأ أثناء عرض المنتج.</b>", parse_mode=ParseMode.HTML)
+        except Exception: pass
 
 async def process_product_telegram(product_id: str, base_url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
         product_data, details_source = await _get_product_data(product_id)
         if not product_data or details_source == "None":
-             await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج ذي المعرف {product_id}.</b>", parse_mode=ParseMode.HTML)
+             await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج.</b>", parse_mode=ParseMode.HTML)
              return
 
         product_data['id'] = product_id
         generated_links = await _generate_offer_links(base_url)
         response_text = _build_response_message(product_data, generated_links)
         await _send_telegram_response(context, chat_id, product_data, response_text)
-    except Exception:
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=f"<b>حدث خطأ غير متوقع أثناء معالجة المنتج {product_id}. عذراً!</b>", parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+    except Exception: pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
-
+    if not update.message or not update.message.text: return
     message_text = update.message.text
     chat_id = update.effective_chat.id
 
     potential_urls = extract_potential_aliexpress_urls(message_text)
-    if not potential_urls:
-        await context.bot.send_message(chat_id=chat_id, text="<b>يرجى إرسال رابط منتج AliExpress لإنشاء تخفيضات له.</b>", parse_mode=ParseMode.HTML)
-        return
+    if not potential_urls: return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     loading_sticker_msg = None
-    try:
-        loading_sticker_msg = await context.bot.send_sticker(chat_id, "CAACAgIAAxkBAAIU1GYOk5jWvCvtykd7TZkeiFFZRdUYAAIjAAMoD2oUJ1El54wgpAY0BA")
-    except Exception:
-        pass
+    try: loading_sticker_msg = await context.bot.send_sticker(chat_id, "CAACAgIAAxkBAAIU1GYOk5jWvCvtykd7TZkeiFFZRdUYAAIjAAMoD2oUJ1El54wgpAY0BA")
+    except Exception: pass
 
     processed_product_ids = set()
     tasks = []
@@ -466,10 +384,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             base_url = None
 
             if not url.startswith(('http://', 'https://')):
-                 if COMBINED_DOMAIN_REGEX.search(url):
-                    url = f"https://{url}"
-                 else:
-                    continue
+                 if COMBINED_DOMAIN_REGEX.search(url): url = f"https://{url}"
+                 else: continue
 
             if STANDARD_ALIEXPRESS_DOMAIN_REGEX.match(url):
                 product_id = extract_product_id(url)
@@ -485,18 +401,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 processed_product_ids.add(product_id)
                 tasks.append(process_product_telegram(product_id, base_url, update, context))
 
-    if not tasks:
-        await context.bot.send_message(chat_id=chat_id, text="<b>❌ لم نتمكن من العثور على أي روابط منتجات AliExpress صالحة في رسالتك.</b>", parse_mode=ParseMode.HTML)
-    else:
-        if len(tasks) > 1:
-            await context.bot.send_message(chat_id=chat_id, text=f"<b>⏳ جاري معالجة {len(tasks)} منتجات AliExpress. يرجى الانتظار...</b>", parse_mode=ParseMode.HTML)
-        await asyncio.gather(*tasks)
-
+    if tasks: await asyncio.gather(*tasks)
     if loading_sticker_msg:
-        try:
-            await context.bot.delete_message(chat_id, loading_sticker_msg.message_id)
-        except Exception:
-            pass
+        try: await context.bot.delete_message(chat_id, loading_sticker_msg.message_id)
+        except Exception: pass
 
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -516,9 +424,7 @@ def main() -> None:
     logger.info("Starting Telegram bot polling...")
     application.run_polling()
 
-    executor.shutdown(wait=True)
-
 if __name__ == "__main__":
     main()
 
-# --- END OF CLEANED & MODIFIED app.py ---
+# --- END OF CLEANED & FINAL app.py WITH USD ---
