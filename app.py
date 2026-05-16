@@ -1,4 +1,5 @@
-# --- START OF CLEANED & FINAL app.py WITH USD ---
+# --- START OF CLEANED & FINAL app.py WITH USD & SAFELINKS ---
+
 import logging
 import os
 import re
@@ -23,7 +24,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatAction
 
 import iop
-# تأكد من وجود ملف aliexpress_utils.py المطور بجانب هذا الملف
+# تأكد من وجود ملف aliexpress_utils.py المطور بجانب هذا الملف في نفس المجلد
 from aliexpress_utils import get_product_details_by_id
 
 load_dotenv()
@@ -285,8 +286,9 @@ async def _generate_offer_links(base_url: str) -> dict[str, str | None]:
     all_links_dict = await generate_affiliate_links_batch(urls_to_fetch)
     return {offer_key: all_links_dict.get(target_url) for offer_key, target_url in target_urls_map.items()}
 
+# --- دالة بناء الرسالة الآمنة بعد تشفير الروابط الطويلة وضبط عملة الدولار ---
 def _build_response_message(product_data: dict, generated_links: dict) -> str:
-    """Builds the Arabic response message string exactly as the user's template image."""
+    """Builds the Arabic response message string safely with escaped links and USD."""
     import html
     message_lines = []
     product_title = html.escape(product_data.get('title', 'منتج غير معروف'))
@@ -329,7 +331,9 @@ def _build_response_message(product_data: dict, generated_links: dict) -> str:
         link = generated_links.get(offer_key)
         label = offers_formatting.get(offer_key)
         if link and label:
-            message_lines.append(f"{label}\n{link}\n")
+            # تشفير الرابط لحمايته من الفشل والقطع داخل نظام HTML الخاص بتليجرام
+            safe_link = html.escape(link)
+            message_lines.append(f"{label}\n{safe_link}\n")
             offers_found = True
 
     if not offers_found:
@@ -427,4 +431,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# --- END OF CLEANED & FINAL app.py WITH USD ---
+# --- END OF CLEANED & FINAL app.py WITH USD & SAFELINKS ---
