@@ -1,4 +1,4 @@
-# --- START OF DEEP-SEARCH ABSOLUTE CHEAPEST PRICE COMPARISON BOT ---
+# --- START OF BALANCED EXACT-MATCH CHEAPEST PRICE BOT ---
 
 import logging
 import os
@@ -102,7 +102,7 @@ resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
 # --- Helper Functions ---
 def clean_keywords(title: str) -> str:
-    """استخراج مرن وذكي يركز على لب المنتج لمنع تضييق نتائج البحث العميقة"""
+    """استخراج متوازن يركز على اسم البراند والنوع لمنع الكلمات العشوائية"""
     title_clean = re.sub(r'\[.*?\]|\(.*?\)', '', title.lower())
     title_clean = re.sub(r'[^\w\s-]', ' ', title_clean)
     words = title_clean.split()
@@ -116,13 +116,12 @@ def clean_keywords(title: str) -> str:
     
     filtered_words = [w for w in words if w not in stop_words and len(w) > 1]
     
-    # نأخذ أول 3 كلمات جوهرية فقط لفتح المجال أمام محرك البحث ليعود بكل المتاجر المتاحة أرخصها وأغلاها
     if len(filtered_words) >= 2:
         return " ".join(filtered_words[:3])
     return " ".join(words[:3])
 
 def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_products: list, orig_id: str) -> list:
-    """غربلة وتصفية ذكية لضمان مطابقة السلعة 100% والسماح بأكبر نسبة تخفيض ممكنة"""
+    """غربلة معتدلة وموزونة: تحجب الإكسسوارات الرخيصة وتجلب صفقات حرق الأسعار الحقيقية"""
     if not search_products: return []
     
     try: orig_price = float(str(orig_price_raw).replace(',', '.'))
@@ -132,14 +131,20 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
     seen_ids = set()
     orig_title_lower = orig_title.lower()
     
-    # استخراج القوة والمواصفات الفنية الصارمة (مثل 65W أو 100W أو 512GB) لفرض مطابقتها
+    # 1. استخراج المواصفات الفنية الصارمة لربط المنتج بنوعه (مثال: 65W, 100W, 12A, 512GB)
     spec_patterns = [r'\b\d+w\b', r'\b\d+a\b', r'\b\d+mah\b', r'\bgan\b', r'\bpd\b', r'\b\d+gb\b', r'\b\d+tb\b']
     orig_specs = []
     for pattern in spec_patterns:
         orig_specs.extend(re.findall(pattern, orig_title_lower))
     orig_specs = set(orig_specs)
 
-    # تحديد الكلمات المفتاحية للفئات لتجنب تداخل المنتجات
+    # 2. كلمات الحظر للأقسام التافهة التي يضعها البائعون كفخ سعري
+    negative_keywords = {
+        'bag', 'case', 'box', 'sticker', 'strap', 'holder', 'protector', 'rope', 'organizer', 'cover', 'pouch',
+        'حقيبة', 'كفر', 'ملصق', 'حامل', 'حماية', 'جراب', 'منظم', 'صندوق', 'حبل', 'سير'
+    }
+
+    # 3. تحديد نوع الفئة الرئيسية للمنتج لمنع تداخله
     charger_keywords = {'charger', 'plug', 'adapter', 'gan', 'block', 'رأس', 'شاحن', 'مقبس'}
     cable_keywords = {'cable', 'cord', 'wire', 'line', 'سلك', 'كابل', 'خيط'}
     
@@ -158,15 +163,23 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
         try: p_price = float(str(p_price_raw).replace(',', '.'))
         except (ValueError, TypeError): continue
 
-        # 1. جدار حماية السعر العميق: تم خفضه لـ 15% للسماح بالتخفيضات الضخمة وحرق الأسعار الحقيقي
-        if orig_price is not None and p_price < (orig_price * 0.15):
-            continue
+        # الفلتر الأول [جدار الحماية المعتدل]: يمنع السقوط الوهمي للأكسسوارات ويسمح بالتخفيض الحقيقي
+        # إذا كان السعر الأصلي 10$، يسمح فقط بالأسعار بين 4.5$ و 15$
+        if orig_price is not None:
+            if p_price < (orig_price * 0.45) or p_price > (orig_price * 1.50):
+                continue
 
-        # 2. التحقق الصارم من الفئة لحظر الملحقات التافهة
+        # الفلتر الثاني: طرد المنتجات التي تحتوي عناوينها على أكسسوارات تافهة بشكل صريح
+        if any(neg in p_title_lower for neg in negative_keywords):
+            # استثناء إذا كانت الكلمة موجودة أصلاً في المنتج الرئيسي المرسل
+            if not any(neg in orig_title_lower for neg in negative_keywords):
+                continue
+
+        # الفلتر الثالث: التدقيق الصارم في بنية الفئة (شاحن ضد شاحن، كابل ضد كابل)
         if is_charger and not any(k in p_title_lower for k in charger_keywords): continue
         if is_cable and not any(k in p_title_lower for k in cable_keywords): continue
 
-        # 3. التحقق من تطابق المواصفات الفنية الحاكمة (إن وجدت) لضمان عدم جلب قوة أقل
+        # الفلتر الرابع: مطابقة المواصفات الفنية الحاكمة (مثل الواط والأمبير والجيجا)
         p_specs = []
         for pattern in spec_patterns:
             p_specs.extend(re.findall(pattern, p_title_lower))
@@ -174,20 +187,20 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
         if orig_specs and not orig_specs.intersection(p_specs):
             continue
 
-        # 4. مطابقة نسبة معجمية مرنة لاسم المنتج لضمان أنه نفس نوع السلعة
+        # الفلتر الخامس: مطابقة الحد الأدنى من الكلمات المشتركة لضمان تطابق السلعة معجمياً
         stop_words = {'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 'shipping', 'free', 'official', 'store', 'choice'}
         orig_words = set([w for w in re.sub(r'[^\w\s]', ' ', orig_title_lower).split() if len(w) > 2 and w not in stop_words])
         p_words = set([w for w in re.sub(r'[^\w\s]', ' ', p_title_lower).split() if len(w) > 2 and w not in stop_words])
         
         if orig_words:
             common = orig_words.intersection(p_words)
-            if len(common) < 2: # يجب أن يشترك في كلمتين أساسيتين على الأقل لضمان التقارب الكامل
+            if len(common) < 2: 
                 continue
 
         valid_products.append(p)
         seen_ids.add(p_id)
 
-    # إعادة فرز وتأكيد الترتيب التصاعدي من القرش الأقل للأعلى
+    # فرز نهائي تصاعدي للتأكد من وضع الخيار الأوفر في الصدارة
     valid_products.sort(key=lambda x: float(str(x.get('target_sale_price', 999999)).replace(',', '.')))
     return valid_products
 
@@ -283,9 +296,9 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         return product_info
     except Exception: return None
 
-async def fetch_alternative_cheapest_products(title: str) -> list:
+async def fetch_alternative_cheapest_products(title: str, sort_mode: str = 'SALE_PRICE_ASC') -> list:
     cleaned_query = clean_keywords(title)
-    logger.info(f"Deep Deep Search query: {cleaned_query}")
+    logger.info(f"Balanced Search query: {cleaned_query} using sort: {sort_mode}")
     
     def _execute_query_api():
         try:
@@ -295,8 +308,7 @@ async def fetch_alternative_cheapest_products(title: str) -> list:
             request.add_api_param('target_language', TARGET_LANGUAGE)
             request.add_api_param('tracking_id', ALIEXPRESS_TRACKING_ID)
             request.add_api_param('ship_to_country', QUERY_COUNTRY)
-            # النقطة السحرية: إجبار السيرفر على الترتيب من الأرخص للأغلى مباشرة من المنبع
-            request.add_api_param('sort', 'SALE_PRICE_ASC')
+            request.add_api_param('sort', sort_mode)
             request.add_api_param('page_size', '50')
             return aliexpress_client.execute(request)
         except Exception: return None
@@ -354,7 +366,7 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة الأسعار العميقة لـ AliExpress!\n\n📋 أرسل رابط المنتج الآن، وسيقوم البوت بمسح السيرفرات بالكامل لجلب أرخص سعر متاح للسلعة بدقة متناهية!🚀</b>"""
+    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة الأسعار المعتدل والذكي لـ AliExpress!\n\n📋 أرسل رابط المنتج الآن، وسيجلب لك أرخص الأسعار البديلة الحقيقية متجنباً الملحقات والأكسسوارات المخادعة تماماً!🚀</b>"""
     await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
 
 async def _get_product_data(product_id: str) -> tuple[dict | None, str]:
@@ -377,7 +389,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
     chat_id = update.effective_chat.id
     import html
     try:
-        # 1. جلب السعر الأصلي الحالي للرابط المرسل
+        # 1. جلب بيانات السعر الأصلي للرابط المرسل
         product_data, details_source = await _get_product_data(product_id)
         if not product_data or details_source == "None":
              await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج من AliExpress.</b>", parse_mode=ParseMode.HTML)
@@ -388,10 +400,18 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         try: orig_price_num = float(str(orig_price).replace(',', '.'))
         except Exception: orig_price_num = 0.0
 
-        # 2. جلب وتصفية المنتجات البديلة المرتبة من الأرخص على الإطلاق برمجياً من السيرفر
-        raw_alternatives = await fetch_alternative_cheapest_products(title)
+        # 2. جلب المنتجات باستخدام نظام الفرز التصاعدي المعتدل وحجب الأكسسوارات
+        raw_alternatives = await fetch_alternative_cheapest_products(title, sort_mode='SALE_PRICE_ASC')
         filtered_alternatives = filter_and_sort_alternatives(title, orig_price, raw_alternatives, product_id)
         
+        # نظام البحث الهجين الهام: إذا كانت الغربلة الصارمة للأرخص فارغة بسبب حظر الأكسسوارات، نبحث بالوضع الافتراضي لملء الخيارات بذكاء
+        if len(filtered_alternatives) < 2:
+            raw_backups = await fetch_alternative_cheapest_products(title, sort_mode='VOLUME_HIGH_2_LOW')
+            backups_filtered = filter_and_sort_alternatives(title, orig_price, raw_backups, product_id)
+            for b in backups_filtered:
+                if b not in filtered_alternatives:
+                    filtered_alternatives.append(b)
+
         final_offers_data = []
         for p in filtered_alternatives[:4]:
             p_url = p.get('product_detail_url')
@@ -406,7 +426,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
                     "is_original": False
                 })
 
-        # إدراج الرابط الأصلي الذي أرسله المستخدم تلقائياً ضمن المقارنة ليتضح فارق السعر الهائل
+        # إدراج رابط العميل الأصلي دائماً ضمن قائمة المقارنة لإيضاح الفرق المالي والخيارات المتاحة له
         if not any(item['url'] == base_url for item in final_offers_data):
             final_offers_data.append({
                 "url": base_url,
@@ -414,19 +434,19 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
                 "is_original": True
             })
 
-        # الفرز التصاعدي المطلق لضمان ظهور أصغر رقم مالي في الخيار الأول رياضياً
+        # إعادة الفرز الرياضي التصاعدي النهائي داخل الكود للأرقام الحقيقية المتبقية بعد التصفية
         final_offers_data.sort(key=lambda x: x['price'] if x['price'] > 0 else 999999)
 
-        # 4. تحويل الروابط للأفلييت
+        # 4. توليد روابط الأفلييت للخيارات الأربعة الأولى المعتدلة
         urls_to_convert = [item['url'] for item in final_offers_data[:4]]
         generated_links_batch = await generate_affiliate_links_batch(urls_to_convert)
 
-        # 5. صياغة التقرير النهائي للمستخدم بكل دقة وفخر بالأرخص
+        # 5. صياغة وعرض النص النهائي
         labels_pool = [
-            "<b>🥇 الخيار الأول (أرخص متجر على الإطلاق) 🏆 بـ : ({price_val} $) 🔥</b>",
-            "<b>🥈 الخيار الثاني (بائع بديل ممتاز) 🚀 بـ : ({price_val} $) 🔥</b>",
-            "<b>🥉 الخيار الثالث (متجر منافس مخفض) ⚡️ بـ : ({price_val} $) 🔥</b>",
-            "<b>🏅 الخيار الرابع (عرض إضافي متاح) ✨ بـ : ({price_val} $) 🔥</b>"
+            "<b>🥇 الخيار الأول (أوفر بائع حقيقي) 🏆 بـ : ({price_val} $) 🔥</b>",
+            "<b>🥈 الخيار الثاني (متجر بديل مخفض) 🚀 بـ : ({price_val} $) 🔥</b>",
+            "<b>🥉 الخيار الثالث (عرض بائع منافس) ⚡️ بـ : ({price_val} $) 🔥</b>",
+            "<b>🏅 الخيار الرابع (خيار إضافي متاح) ✨ بـ : ({price_val} $) 🔥</b>"
         ]
 
         final_offers = []
@@ -447,7 +467,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         message_lines = []
         product_title = html.escape(title)
         message_lines.append(f"<b>📝 إسم المنتج : {product_title[:250]}</b>")
-        message_lines.append("<b>\n🎯 عثرنا لك على أرخص الأسعار والمتاجر البديلة في علي إكسبريس ⬇️🤩\n</b>")
+        message_lines.append("<b>\n🎯 عثرنا لك على أفضل الأسعار البديلة لنفس السلعة بصفقات حقيقية ⬇️🤩\n</b>")
         
         for offer in final_offers:
             safe_link = html.escape(offer['link'])
@@ -518,10 +538,10 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Deep-Search Absolute Cheapest Bot...")
+    logger.info("Starting Balanced Exact-Match Comparison Bot...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF DEEP-SEARCH ABSOLUTE CHEAPEST PRICE COMPARISON BOT ---
+# --- END OF BALANCED EXACT-MATCH PRICE COMPARISON BOT ---
