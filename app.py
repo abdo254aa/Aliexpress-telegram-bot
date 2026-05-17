@@ -1,4 +1,4 @@
-# --- START OF ULTIMATE PRICE-LOCKED BOT ---
+# --- START OF ULTIMATE PRICE-LOCKED BOT (15% DISCOUNT RANGE) ---
 
 import logging
 import os
@@ -102,13 +102,11 @@ resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
 # --- Helper Functions ---
 def extract_clean_price(price_raw) -> float:
-    """دالة فتاكة لاستخراج الرقم الحقيقي حتى لو أرسله API مع حروف وعملات"""
+    """استخراج الرقم الحقيقي الصافي"""
     if not price_raw: return 0.0
     try:
         price_str = str(price_raw).replace(',', '.')
-        # إزالة كل شيء عدا الأرقام والنقطة
         clean_str = re.sub(r'[^\d.]', '', price_str)
-        # إصلاح الأخطاء إذا وجدت أكثر من نقطة
         if clean_str.count('.') > 1:
             parts = clean_str.split('.')
             clean_str = parts[0] + '.' + ''.join(parts[1:])
@@ -135,12 +133,10 @@ def clean_keywords(title: str) -> str:
     return " ".join(words[:3])
 
 def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_products: list, orig_id: str) -> list:
-    """الحصار الفولاذي: نسبة تطابق صارمة بين -10% و +10% فقط"""
     if not search_products: return []
     
     orig_price = extract_clean_price(orig_price_raw)
     
-    # حماية طوارئ: إذا فشل جلب السعر الأصلي، نوقف إعطاء نتائج عشوائية
     if orig_price <= 0.5:
         return []
 
@@ -164,15 +160,14 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
         if p_price <= 0.1: 
             continue
 
-        # 🔥 [قلب النظام: حصار الـ 10% المزدوج] 🔥
-        # إذا كان المنتج بـ 100$، سيسمح فقط للمنتجات بين 90$ و 110$ بالمرور
-        min_allowed_price = orig_price * 0.90  # خصم 10% كحد أقصى
-        max_allowed_price = orig_price * 1.10  # زيادة 10% كحد أقصى
+        # 🔥 [تم التعديل: حصار التخفيض بحد أقصى 15%] 🔥
+        # يسمح بهبوط السعر حتى 15% وصعوده حتى 10%
+        min_allowed_price = orig_price * 0.85  # خصم 15%
+        max_allowed_price = orig_price * 1.10  # زيادة 10%
         
         if p_price < min_allowed_price or p_price > max_allowed_price:
             continue
 
-        # طرد الكلمات المانعة
         if any(neg in p_title_lower for neg in strict_negative_keywords):
             if not any(neg in orig_title_lower for neg in strict_negative_keywords):
                 continue
@@ -439,7 +434,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         if orig_price_num <= 0.5:
              message_lines.append("<b>\n⚠️ لم نتمكن من التقاط سعر المنتج الأصلي لتصفية العروض بدقة، لذا تم إيقاف عرض البدائل لحمايتك.</b>")
         else:
-             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة بنسبة 10% ⬇️🤩\n</b>")
+             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة بنسبة 15% ⬇️🤩\n</b>")
              for offer in final_offers:
                  safe_link = html.escape(offer['link'])
                  message_lines.append(f"{offer['label']}\n{safe_link}\n")
@@ -509,10 +504,10 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Fully Locked Anti-Accessory Bot...")
+    logger.info("Starting Fully Locked Anti-Accessory Bot (15%)...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF ULTIMATE PRICE-LOCKED BOT ---
+# --- END OF ULTIMATE PRICE-LOCKED BOT (15% DISCOUNT RANGE) ---
