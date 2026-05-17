@@ -1,4 +1,4 @@
-# --- START OF GENUINE MULTI-SELLER PRICE COMPARISON BOT ---
+# --- START OF GENUINE EXACT-MATCH PRICE COMPARISON BOT ---
 
 import logging
 import os
@@ -102,18 +102,41 @@ resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
 # --- Helper Functions ---
 def clean_keywords(title: str) -> str:
-    """استخراج الكلمات الجوهرية من العنوان للبحث عنها في المتاجر الأخرى"""
-    title_clean = re.sub(r'\[.*?\]|\(.*?\)', '', title)
-    title_clean = re.sub(r'[^\w\s]', ' ', title_clean)
+    """استخراج تقني ذكي للكلمات الجوهرية وحذف العبارات التسويقية المضللة للبحث"""
+    title_lower = title.lower()
+    title_clean = re.sub(r'\[.*?\]|\(.*?\)', '', title_lower)
+    title_clean = re.sub(r'[^\w\s-]', ' ', title_clean)
     words = title_clean.split()
-    fillers = {'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 'shipping', 'free', 'led', 'lcd', 'to'}
-    filtered_words = [w for w in words if len(w) > 2 and w.lower() not in fillers]
-    if len(filtered_words) >= 2:
-        return " ".join(filtered_words[:4])
+    
+    # الكلمات التسويقية التي يجب حجبها وتجاهلها تماماً من البحث لأنها تجلب منتجات عشوائية
+    stop_words = {
+        'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 
+        'shipping', 'free', 'led', 'lcd', 'to', 'official', 'store', 'brand', 'top', 
+        'hot', 'sale', 'promotion', 'choice', 'high', 'quality', '2024', '2025', '2026',
+        'in', 'on', 'at', 'by', 'an', 'a', 'of', 'fast', 'quick', 'charging', 'phone'
+    }
+    
+    known_brands = {'baseus', 'essager', 'ugreen', 'anker', 'toocki', 'mcdodo', 'kuulaa', 'joyroom', 'orico', 'rock', 'samsung', 'xiaomi'}
+    
+    priority_tokens = []
+    regular_tokens = []
+    
+    for w in words:
+        if len(w) <= 1 or w in stop_words:
+            continue
+        # إعطاء أولوية مطلقة للماركة والمواصفات الفنية (مثل 65w أو 7a) في نص البحث
+        if w in known_brands or re.search(r'\d+(w|a|v|mah)', w):
+            priority_tokens.append(w)
+        else:
+            regular_tokens.append(w)
+            
+    search_query_words = priority_tokens + regular_tokens
+    if len(search_query_words) >= 2:
+        return " ".join(search_query_words[:4])
     return " ".join(words[:4])
 
 def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_products: list, orig_id: str) -> list:
-    """فلترة المنتجات لضمان جلب متاجر وروابط مختلفة تماماً بأسعار حقيقية ومنع الخيوط البديلة"""
+    """تصفية وفلترة هندسية صارمة لمطابقة نفس المنتج والنوع 100% ومنع العشوائية"""
     if not search_products: return []
     
     try: orig_price = float(str(orig_price_raw).replace(',', '.'))
@@ -123,15 +146,36 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
     seen_ids = set()
     orig_title_lower = orig_title.lower()
     
-    # تصنيف ذكي لنوع السلعة المرسلة لمنع تداخل الخيوط مع المقابس
+    # 1. تحديد الماركة الأصلية بدقة
+    known_brands = ['baseus', 'essager', 'ugreen', 'anker', 'toocki', 'mcdodo', 'kuulaa', 'joyroom', 'orico', 'rock', 'samsung', 'xiaomi']
+    orig_brand = None
+    for b in known_brands:
+        if b in orig_title_lower:
+            orig_brand = b
+            break
+
+    # 2. استخراج الخصائص الرقمية الصارمة (مثل الواط والأمبير)
+    spec_patterns = [r'\b\d+w\b', r'\b\d+a\b', r'\b\d+mah\b', r'\bgan\b', r'\bpd\b']
+    orig_specs = []
+    for pattern in spec_patterns:
+        orig_specs.extend(re.findall(pattern, orig_title_lower))
+    orig_specs = set(orig_specs)
+
+    # 3. تحديد نوع الفئة لمنع تداخل المنتجات المختلفة كلياً
     charger_keywords = {'charger', 'plug', 'adapter', 'gan', 'block', 'رأس', 'شاحن', 'مقبس'}
     cable_keywords = {'cable', 'cord', 'wire', 'line', 'سلك', 'كابل', 'خيط'}
+    phone_keywords = {'case', 'cover', 'screen', 'protector', 'غلاف', 'حماية', 'كفر'}
     
-    is_orig_charger = any(k in orig_title_lower for k in charger_keywords)
+    is_charger = any(k in orig_title_lower for k in charger_keywords)
+    is_cable = any(k in orig_title_lower for k in cable_keywords)
+    is_phone_case = any(k in orig_title_lower for k in phone_keywords)
+
+    # تفكيك كلمات العنوان لتطابق النسبة
+    stop_words = {'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 'shipping', 'free', 'official', 'store', 'choice', 'high', 'quality'}
+    orig_words = set([w for w in re.sub(r'[^\w\s]', ' ', orig_title_lower).split() if len(w) > 2 and w not in stop_words])
 
     for p in search_products:
         p_id = str(p.get('product_id') or '')
-        # تخطي إذا كان نفس المنتج الأصلي لضمان روابط مختلفة ومتاجر جديدة كلياً
         if not p_id or p_id in seen_ids or p_id == orig_id:
             continue
             
@@ -142,24 +186,40 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
         try: p_price = float(str(p_price_raw).replace(',', '.'))
         except (ValueError, TypeError): continue
 
-        # 1. فلتر حماية السعر الأدنى: إذا قل السعر عن 30% من الأصلي، فهو حتماً سلك/إكسسوار مخادع وليس رأس الشاحن
-        if orig_price is not None and p_price < (orig_price * 0.30):
+        # الفلتر الأول: إلزامية تطابق الماركة
+        if orig_brand and orig_brand not in p_title_lower:
+            continue
+            
+        # الفلتر الثاني: إلزامية تطابق القوة والمواصفات الرقمية الفنية (65W تطابق 65W حصراً)
+        p_specs = []
+        for pattern in spec_patterns:
+            p_specs.extend(re.findall(pattern, p_title_lower))
+        p_specs = set(p_specs)
+        if orig_specs and not orig_specs.intersection(p_specs):
             continue
 
-        # 2. حظر الأسلاك إذا كان المنتج الأصلي مقبس شاحن
-        if is_orig_charger and not any(k in p_title_lower for k in charger_keywords):
-            if any(k in p_title_lower for k in cable_keywords):
+        # الفلتر الثالث: حظر تداخل الفئات والأقسام المختلفة
+        if is_charger and not any(k in p_title_lower for k in charger_keywords): continue
+        if is_cable and not any(k in p_title_lower for k in cable_keywords): continue
+        if is_phone_case and not any(k in p_title_lower for k in phone_keywords): continue
+
+        # الفلتر الرابع: جدار حماية السعر (يمنع السلع الرخيصة جداً كالإكسسوارات المخفية بالصفحة)
+        if orig_price is not None:
+            if p_price < (orig_price * 0.40) or p_price > (orig_price * 1.80):
+                continue
+
+        # الفلتر الخامس: نسبة تقاطع الكلمات الجوهرية (يجب أن تتطابق بنسبة عالية)
+        p_words = set([w for w in re.sub(r'[^\w\s]', ' ', p_title_lower).split() if len(w) > 2 and w not in stop_words])
+        if orig_words:
+            common = orig_words.intersection(p_words)
+            if len(common) < 2 or (len(common) / len(orig_words)) < 0.50:
                 continue
 
         valid_products.append(p)
         seen_ids.add(p_id)
 
-    # ترتيب المنتجات والمتاجر المختلفة تصاعدياً من الأقل سعراً للأعلى تلقائياً
-    def get_p_price(item):
-        try: return float(str(item.get('target_sale_price', 999999)).replace(',', '.'))
-        except ValueError: return 999999
-
-    valid_products.sort(key=get_p_price)
+    # الفرز النهائي التصاعدي للبدائل الحقيقية المتطابقة تماماً
+    valid_products.sort(key=lambda x: float(str(x.get('target_sale_price', 999999)).replace(',', '.')))
     return valid_products
 
 async def resolve_short_link(short_url: str, session: aiohttp.ClientSession) -> str | None:
@@ -202,7 +262,7 @@ async def periodic_cache_cleanup(context: ContextTypes.DEFAULT_TYPE):
     await link_cache.clear_expired()
     await resolved_url_cache.clear_expired()
 
-# --- Fetch Initial Product Details ---
+# --- Fetch Product Details ---
 async def fetch_product_details_v2(product_id: str) -> dict | None:
     cached_data = await product_cache.get(product_id)
     if cached_data: return cached_data
@@ -256,6 +316,7 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
 
 async def fetch_alternative_cheapest_products(title: str) -> list:
     cleaned_query = clean_keywords(title)
+    logger.info(f"Searching query generated: {cleaned_query}")
     
     def _execute_query_api():
         try:
@@ -322,7 +383,7 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة الأسعار الحقيقية لـ AliExpress!\n\n📋 أرسل رابط المنتج الآن، وسيقوم البوت بالبحث في المتاجر الأخرى وجلب روابط مختلفة بأسعار حقيقية متنوعة ومرتبة من الأقل للأعلى!🚀</b>"""
+    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة الأسعار الحقيقية والمطابقة تماماً لـ AliExpress!\n\n📋 أرسل رابط المنتج الآن، وسيقوم البوت بفحص المتاجر الأخرى وجلب روابط مختلفة لنفس المنتج بأسعار حقيقية متنوعة ومرتبة تصاعدياً!🚀</b>"""
     await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
 
 async def _get_product_data(product_id: str) -> tuple[dict | None, str]:
@@ -345,7 +406,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
     chat_id = update.effective_chat.id
     import html
     try:
-        # 1. جلب تفاصيل وسعر المنتج الأصلي الذي أرسله المستخدم
+        # 1. جلب تفاصيل وسعر المنتج الأصلي
         product_data, details_source = await _get_product_data(product_id)
         if not product_data or details_source == "None":
              await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج من AliExpress.</b>", parse_mode=ParseMode.HTML)
@@ -356,13 +417,11 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         try: orig_price_num = float(str(orig_price).replace(',', '.'))
         except Exception: orig_price_num = 0.0
 
-        # 2. البحث عن المتاجر والسلع البديلة عبر محرك البحث
+        # 2. البحث وتطبيق الفلترة الدقيقة جداً لحجب المنتجات المختلفة وعرض نفس السلعة
         raw_alternatives = await fetch_alternative_cheapest_products(title)
-        
-        # 3. تصفية النتائج بشكل صارم لمنع الخيوط ولضمان روابط مختلفة (مُعرفات منتجات مختلفة)
         filtered_alternatives = filter_and_sort_alternatives(title, orig_price, raw_alternatives, product_id)
         
-        # تجميع عروض السلع والمتاجر المختلفة
+        # تجميع عروض السلع والمتاجر المختلفة المتطابقة
         final_offers_data = []
         for p in filtered_alternatives[:4]:
             p_url = p.get('product_detail_url')
@@ -377,44 +436,22 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
                     "is_original": False
                 })
 
-        # إذا كانت نتائج البحث أقل من 4 روابط، نقوم بإضافة الرابط الأصلي نفسه كمكمل للعدد لكي يرى المستخدم سعره مقارنة بالباقي
-        if len(final_offers_data) < 4:
-            if not any(item['url'] == base_url for item in final_offers_data):
-                final_offers_data.append({
-                    "url": base_url,
-                    "price": orig_price_num,
-                    "is_original": True
-                })
+        # إدراج الرابط الأصلي الذي أرسله المستخدم تلقائياً لكي يرى المقارنة والفرق المالي
+        if not any(item['url'] == base_url for item in final_offers_data):
+            final_offers_data.append({
+                "url": base_url,
+                "price": orig_price_num,
+                "is_original": True
+            })
 
-        # إذا ما زال العدد أقل من 4 بسبب قلة المنتجات في البحث، نملأ الفراغات بمنتجات متبقية فريدة من نوعها لضمان ثبات الـ 4 خيارات
-        if len(final_offers_data) < 4:
-            seen_urls = {item['url'] for item in final_offers_data}
-            for p in raw_alternatives:
-                p_url = p.get('product_detail_url')
-                if p_url and p_url not in seen_urls and str(p.get('product_id')) != product_id:
-                    p_price = p.get('target_sale_price', 0)
-                    try: price_num = float(str(p_price).replace(',', '.'))
-                    except Exception: price_num = 0.0
-                    
-                    if orig_price_num == 0 or price_num >= (orig_price_num * 0.30):
-                        final_offers_data.append({
-                            "url": p_url,
-                            "price": price_num,
-                            "is_original": False
-                        })
-                        seen_urls.add(p_url)
-                        if len(final_offers_data) == 4:
-                            break
-
-        # 4. إعادة ترتيب جميع الخيارات المجمعة (تصاعدياً من الأقل سعراً حقيقياً إلى الأعلى على الإطلاق)
-        # هذا يضمن ظهور الأسعار الصغير أولاً ثم الأكبر فالمكبر بشكل رياضي صحيح 100%
+        # ترتيب جميع الخيارات ترتيباً تصاعدياً حقيقياً بناءً على أسعارها الفعلية
         final_offers_data.sort(key=lambda x: x['price'] if x['price'] > 0 else 999999)
 
-        # 5. تحويل الروابط الحقيقية المختلفة دفعة واحدة إلى روابط أفلييت تسويقية
+        # 4. توليد روابط الأفلييت التسويقية للنتائج الأربعة الأولى
         urls_to_convert = [item['url'] for item in final_offers_data[:4]]
         generated_links_batch = await generate_affiliate_links_batch(urls_to_convert)
 
-        # 6. صياغة وعرض الرسالة النهائية المفلترة
+        # 5. صياغة النص النهائي المرتب
         labels_pool = [
             "<b>🥇 الخيار الأول (أرخص متجر متاح) 🏆 بـ : ({price_val} $) 🔥</b>",
             "<b>🥈 الخيار الثاني (بائع بديل مخفض) 🚀 بـ : ({price_val} $) 🔥</b>",
@@ -428,7 +465,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
             price_display = f"{item['price']:.2f}" if item['price'] > 0 else "عرض ممتاز"
             
             if item.get('is_original'):
-                label_text = f"<b>📍 نفس الرابط الأصلي الذي أرسلته 🌟 بـ : ({price_display} $) 🔥</b>"
+                label_text = f"<b>📍 الرابط الأصلي الذي أرسلته أنت 🌟 بـ : ({price_display} $) 🔥</b>"
             else:
                 label_text = labels_pool[i].format(price_val=price_display)
 
@@ -440,7 +477,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         message_lines = []
         product_title = html.escape(title)
         message_lines.append(f"<b>📝 إسم المنتج : {product_title[:250]}</b>")
-        message_lines.append("<b>\n✳️ أسعار ومتاجر مختلفة وحقيقية للمنتج (مرتبة من الأرخص) ⬇️🤩\n</b>")
+        message_lines.append("<b>\n✳️ أسعار حقيقية ومطابقة لنفس المنتج من متاجر مختلفة ⬇️🤩\n</b>")
         
         for offer in final_offers:
             safe_link = html.escape(offer['link'])
@@ -511,10 +548,10 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Genuine Multi-Seller Comparison Bot...")
+    logger.info("Starting Genuine Exact-Match Comparison Bot...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF GENUINE MULTI-SELLER PRICE COMPARISON BOT ---
+# --- END OF GENUINE EXACT-MATCH PRICE COMPARISON BOT ---
