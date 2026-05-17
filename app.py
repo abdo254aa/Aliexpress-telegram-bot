@@ -1,4 +1,4 @@
-# --- START OF REAL PRICE COMPARISON BOT (4 CHEAPEST alternative LISTINGS) ---
+# --- START OF SMART PRICE COMPARISON BOT WITH INLINE ANTI-SCAM FILTERS ---
 
 import logging
 import os
@@ -70,7 +70,7 @@ STANDARD_ALIEXPRESS_DOMAIN_REGEX = re.compile(r'https?://(?!a\.|s\.click\.)([\w-
 SHORT_LINK_DOMAIN_REGEX = re.compile(r'https?://(?:s\.click\.aliexpress\.com/e/|a\.aliexpress\.com/_)[a-zA-Z0-9_-]+/?', re.IGNORECASE)
 COMBINED_DOMAIN_REGEX = re.compile(r'aliexpress\.com|s\.click\.aliexpress\.com|a\.aliexpress\.com', re.IGNORECASE)
 
-# الفئات الاحتياطية لتوليد عروض تلقائية في حال لم يجد بائعين بدلاء للمنتج
+# قنوات التخفيض الاحتياطية للمنتج نفسه لملء الفراغات عند الحاجة
 OFFER_PARAMS = {
     "coin": {"params": {"sourceType": "620", "channel": "coin"}},
     "choice": {"params": {"sourceType": "680", "channel": "choice"}},
@@ -111,15 +111,55 @@ resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
 # --- Helper Functions ---
 def clean_keywords(title: str) -> str:
-    """تنظيف عنوان المنتج واستخراج الكلمات المفتاحية الأساسية للبحث عن بائعين آخرين بدقة"""
+    """تنظيف العنوان واستخراج الكلمات الجوهرية فقط من أجل بحث أدق"""
     title_clean = re.sub(r'\[.*?\]|\(.*?\)', '', title)
     title_clean = re.sub(r'[^\w\s]', ' ', title_clean)
     words = title_clean.split()
-    fillers = {'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 'shipping', 'free'}
+    fillers = {'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 'shipping', 'free', 'charger', 'cable', 'to', 'led'}
+    # محاولة الحفاظ على الماركة والنوع
     filtered_words = [w for w in words if len(w) > 2 and w.lower() not in fillers]
-    if len(filtered_words) >= 3:
+    if len(filtered_words) >= 2:
         return " ".join(filtered_words[:4])
     return " ".join(words[:4])
+
+def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_products: list) -> list:
+    """تصفية برمجية صارمة لمنع ظهور خيوط الشحن بدلاً من المقابس ولمنع الماركات الخاطئة"""
+    if not search_products: return []
+    
+    try: orig_price = float(str(orig_price_raw).replace(',', '.'))
+    except (ValueError, TypeError): orig_price = None
+
+    valid_products = []
+    # استخراج كلمات العنوان الأصلي للتحقق من التطابق النسيجي لقسم من الكلمات
+    orig_keywords = set(clean_keywords(orig_title).lower().split())
+
+    for p in search_products:
+        p_title = p.get('product_title', '')
+        p_price_raw = p.get('target_sale_price')
+        
+        try: p_price = float(str(p_price_raw).replace(',', '.'))
+        except (ValueError, TypeError): continue
+
+        # 1. فلتر السعر الذكي: يمنع المنتجات الرخيصة جداً (كالخيوط) أو الغالية جداً مقارنة بالمنتج الأصلي
+        if orig_price is not None:
+            if p_price < (orig_price * 0.40) or p_price > (orig_price * 1.50):
+                continue  # تخطي المنتج فوراً لأنه تلاعب بالأسعار من البائع
+
+        # 2. فلتر الكلمات المفتاحية: التأكد من وجود تطابق في الكلمات الجوهرية (كالماركة) لضمان عدم جلب سلع مختلفة
+        p_keywords = set(p_title.lower().split())
+        overlap = orig_keywords.intersection(p_keywords)
+        if not overlap:
+            continue # تخطي إذا لم تكن هناك أي كلمة مشتركة جوهرية
+            
+        valid_products.append(p)
+
+    # ترتيب المنتجات المتبقية والموثوقة تصاعدياً من الأقل سعراً للأعلى
+    def get_p_price(item):
+        try: return float(str(item.get('target_sale_price', 999999)).replace(',', '.'))
+        except ValueError: return 999999
+
+    valid_products.sort(key=get_p_price)
+    return valid_products
 
 async def resolve_short_link(short_url: str, session: aiohttp.ClientSession) -> str | None:
     cached_final_url = await resolved_url_cache.get(short_url)
@@ -167,7 +207,7 @@ async def periodic_cache_cleanup(context: ContextTypes.DEFAULT_TYPE):
     await link_cache.clear_expired()
     await resolved_url_cache.clear_expired()
 
-# --- Fetch Initial Product Details ---
+# --- Fetch Product Details ---
 async def fetch_product_details_v2(product_id: str) -> dict | None:
     cached_data = await product_cache.get(product_id)
     if cached_data: return cached_data
@@ -219,10 +259,9 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         return product_info
     except Exception: return None
 
-# --- البحث الفعلي عن أرخص 4 بائعين لنفس المنتج وترتيبهم تصاعدياً ---
+# --- Fetch Alternatives from API Search ---
 async def fetch_alternative_cheapest_products(title: str) -> list:
     cleaned_query = clean_keywords(title)
-    logger.info(f"Searching alternative items with keywords: '{cleaned_query}'")
     
     def _execute_query_api():
         try:
@@ -232,7 +271,7 @@ async def fetch_alternative_cheapest_products(title: str) -> list:
             request.add_api_param('target_language', TARGET_LANGUAGE)
             request.add_api_param('tracking_id', ALIEXPRESS_TRACKING_ID)
             request.add_api_param('ship_to_country', QUERY_COUNTRY)
-            request.add_api_param('page_size', '40')  # جلب عينة جيدة للفرز الدقيق
+            request.add_api_param('page_size', '50')  # جلب عينة واسعة لضمان دقة التصفية الفردية
             return aliexpress_client.execute(request)
         except Exception: return None
 
@@ -246,16 +285,7 @@ async def fetch_alternative_cheapest_products(title: str) -> list:
         result = response_data.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {})
         if result.get('resp_code') != 200: return []
         
-        products = result.get('result', {}).get('products', {}).get('product', [])
-        if not products: return []
-        
-        # فرز وترتيب المنتجات برمجياً من الأقل سعراً على الإطلاق إلى الأعلى
-        def get_price(p):
-            try: return float(str(p.get('target_sale_price', 999999)).replace(',', '.'))
-            except ValueError: return 999999
-        
-        products.sort(key=get_price)
-        return products[:4]
+        return result.get('result', {}).get('products', {}).get('product', [])
     except Exception: return []
 
 async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, str | None]:
@@ -299,7 +329,7 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة تخفيضات AliExpress!\n\n🔍 كيفية الاستخدام ⬇️:\n1️⃣ انسخ رابط منتجك من AliExpress 📋\n2️⃣ أرسل الرابط هنا 📤\n3️⃣ وسيقوم البوت بالبحث واكتشاف أرخص 4 بائعين لنفس المنتج على الإطلاق!🌟📦\n\n🚀 أرسل رابط المنتج للبدء ! 🎁</b>"""
+    welcome_message = """<b>👋 مرحبًا بك في بوت مقارنة الأسعار الذكي لـ AliExpress!\n\n📋 أرسل رابط أي منتج الآن، وسيقوم البوت بالبحث الذكي وتصفية خداع الخيارات ليعطيك أرخص 4 أسعار حقيقية وموثوقة للمنتج نفسه!🚀</b>"""
     await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
 
 async def _get_product_data(product_id: str) -> tuple[dict | None, str]:
@@ -315,32 +345,35 @@ async def _send_telegram_response(context: ContextTypes.DEFAULT_TYPE, chat_id: i
         else:
             await context.bot.send_message(chat_id=chat_id, text=message_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
-        try: await context.bot.send_message(chat_id=chat_id, text=f"<b>⚠️ حدث خطأ أثناء معالجة رسالة العروض.</b>", parse_mode=ParseMode.HTML)
+        try: await context.bot.send_message(chat_id=chat_id, text=f"<b>⚠️ خطأ أثناء الإرسال.</b>", parse_mode=ParseMode.HTML)
         except Exception: pass
 
 async def process_product_telegram(product_id: str, base_url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     import html
     try:
-        # 1. جلب بيانات المنتج الأساسي
+        # 1. جلب بيانات وتفاصيل المنتج الأصلي المرسل
         product_data, details_source = await _get_product_data(product_id)
         if not product_data or details_source == "None":
-             await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج من علي إكسبريس.</b>", parse_mode=ParseMode.HTML)
+             await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج.</b>", parse_mode=ParseMode.HTML)
              return
 
-        product_data['id'] = product_id
-        title = product_data.get('title', 'منتج AliExpress مميز')
+        title = product_data.get('title', 'منتج AliExpress المميز')
+        orig_price = product_data.get('price')
 
-        # 2. استعلام للبحث عن أرخص 4 بائعين بدلاء لنفس السلعة
-        alt_products = await fetch_alternative_cheapest_products(title)
+        # 2. البحث عن البدائل عبر محرك البحث الخاص بـ AliExpress
+        raw_alternatives = await fetch_alternative_cheapest_products(title)
         
-        # 3. تجميع الروابط لتحويلها دفعة واحدة (Batch) لروابط تسويقية
+        # 3. تطبيق الفلتر الذكي (فلتر السعر + التطابق النصي) لمنع الخيوط والماركات الخاطئة
+        filtered_alternatives = filter_and_sort_alternatives(title, orig_price, raw_alternatives)
+        
+        # 4. تجميع الروابط لتحويلها دفعة واحدة
         urls_to_convert = []
-        for p in alt_products:
+        for p in filtered_alternatives[:4]:
             p_url = p.get('product_detail_url')
             if p_url: urls_to_convert.append(p_url)
 
-        # توليد روابط احتياطية للمنتج الأساسي لحمايته وضمان بقاء الـ 4 سطور ممتلئة دائماً
+        # تجهيز روابط عروض المنتج الأصلي لاستخدامها عند الحاجة (إصلاح النقص في الـ 4 خيارات)
         fallback_urls_map = {}
         for key in OFFER_ORDER:
             fb_url = build_url_with_offer_params(base_url, OFFER_PARAMS[key]["params"])
@@ -348,24 +381,22 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
             if len(urls_to_convert) < 4:
                 urls_to_convert.append(fb_url)
 
-        # معالجة وتوليد الروابط التسويقية عبر الـ API
+        # استدعاء الـ API لتحويل جميع الروابط دفعة واحدة إلى روابط تسويقية
         generated_links_batch = await generate_affiliate_links_batch(urls_to_convert)
         
-        # 4. بناء الـ 4 خيارات بأسعارها الحقيقية الدقيقة
         final_offers = []
         labels_pool = [
-            "<b>🥇 الخيار الأول (الأرخص على الإطلاق) 🏆 بـ : ({price_val} $) 🔥</b>",
-            "<b>🥈 الخيار الثاني (سعر بائع بديل مخفض) 🚀 بـ : ({price_val} $) 🔥</b>",
-            "<b>🥉 الخيار الثالث (سعر بائع بديل ممتاز) ⚡️ بـ : ({price_val} $) 🔥</b>",
-            "<b>🏅 الخيار الرابع (سعر بائع بديل منافس) ✨ بـ : ({price_val} $) 🔥</b>"
+            "<b>🥇 البديل الأول (الأرخص الموثوق) 🏆 بـ : ({price_val} $) 🔥</b>",
+            "<b>🥈 البديل الثاني (متجر منافس مخفض) 🚀 بـ : ({price_val} $) 🔥</b>",
+            "<b>🥉 البديل الثالث (سعر بائع بديل ممتاز) ⚡️ بـ : ({price_val} $) 🔥</b>",
+            "<b>🏅 البديل الرابع (سعر بائع بديل إضافي) ✨ بـ : ({price_val} $) 🔥</b>"
         ]
 
-        # إضافة المنتجات الحقيقية الأرخص التي عثر عليها محرك البحث
-        for i, p in enumerate(alt_products):
+        # تعبئة العروض البديلة الدقيقة التي اجتازت الفلتر الذكي بنجاح
+        for i, p in enumerate(filtered_alternatives[:4]):
             p_url = p.get('product_detail_url')
             aff_link = generated_links_batch.get(p_url) or p_url
-            p_price = p.get('target_sale_price', 'عرض خاص')
-            
+            p_price = p.get('target_sale_price', 'عرض')
             try: formatted_price = f"{float(str(p_price).replace(',', '.')):.2f}"
             except Exception: formatted_price = str(p_price)
 
@@ -374,47 +405,49 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
                 "link": aff_link
             })
 
-        # خط الدفاع والاحتياط: ملء السطور المتبقية في حال عدم وجود بائعين كافيين للمنتج لضمان الـ 4 خيارات ثابتة 100%
-        base_price = product_data.get('price')
-        used_fallbacks = 0
-        while len(final_offers) < 4 and used_fallbacks < len(OFFER_ORDER):
-            key = OFFER_ORDER[used_fallbacks]
+        # الإكمال الذكي (Hybrid Fallback): في حال لم نجد 4 بائعين بدلاء حقيقيين للمنتج لتفادي النقص
+        fallback_idx = 0
+        try: base_price_num = float(str(orig_price).replace(',', '.'))
+        except Exception: base_price_num = None
+
+        while len(final_offers) < 4 and fallback_idx < len(OFFER_ORDER):
+            key = OFFER_ORDER[fallback_idx]
             fb_url = fallback_urls_map[key]
             aff_link = generated_links_batch.get(fb_url) or fb_url
             
-            if base_price:
+            if base_price_num:
                 mult = {"coin": 0.82, "choice": 0.85, "super": 0.88, "limited": 0.90}[key]
-                est_price = f"{round(float(str(base_price).replace(',', '.')) * mult, 2):.2f}"
+                est_price = f"{round(base_price_num * mult, 2):.2f}"
             else:
-                est_price = "تخفيض خاص"
+                est_price = "تخفيض حصري"
                 
             fallback_label_text = {
-                "coin": f"<b>🟨 رابط الشراء بالعملات 🥇 بـ : ({est_price} $) 🔥</b>",
-                "choice": f"<b>🏆  المنتج في عرض  choice🌟 بـ : ({est_price} $) 🔥</b>",
-                "super": f"<b>🟥 المنتج في SuperDeals 🚀 بـ : ({est_price} $) 🔥</b>",
-                "limited": f"<b>⏰ المنتج في العرض المحدود بـ : ({est_price} $) 🔥</b>",
+                "coin": f"<b>🟨 عرض العملات للمنتج الأصلي 🥇 بـ : ({est_price} $) 🔥</b>",
+                "choice": f"<b>🏆 عرض Choice للمنتج الأصلي 🌟 بـ : ({est_price} $) 🔥</b>",
+                "super": f"<b>🟥 عرض SuperDeals للمنتج الأصلي 🚀 بـ : ({est_price} $) 🔥</b>",
+                "limited": f"<b>⏰ العرض المحدود للمنتج الأصلي بـ : ({est_price} $) 🔥</b>",
             }[key]
             
             final_offers.append({
                 "label": fallback_label_text,
                 "link": aff_link
             })
-            used_fallbacks += 1
+            fallback_idx += 1
 
-        # 5. صياغة وتجميع نص الرسالة النهائية باللغة العربية
+        # 5. صياغة الرسالة النهائية وتجميع السطور الأربعة
         message_lines = []
         product_title = html.escape(title)
         message_lines.append(f"<b>📝 إسم المنتج : {product_title[:250]}</b>")
-        message_lines.append("<b>\n✳️ قارن الأسعار واكتشف أرخص 4 بائعين للمنتج حالياً ⬇️🤩\n</b>")
+        message_lines.append("<b>\n✳️ قارن الأسعار واكتشف أرخص الخيارات الحقيقية ⬇️🤩\n</b>")
         
         for offer in final_offers:
             safe_link = html.escape(offer['link'])
             message_lines.append(f"{offer['label']}\n{safe_link}\n")
             
-        message_lines.append("<b>✅ شارك البوت مع أصدقاء ليستفيد الجميع⚡️🤖</b>")
+        message_lines.append("<b>✅ شارك البوت مع أصدقائك ليستفيد الجميع⚡️🤖</b>")
         response_text = "\n".join(message_lines)
         
-        # 6. إرسال الرسالة النهائية للمستخدم
+        # إرسال الرسالة النهائية المفلترة
         await _send_telegram_response(context, chat_id, product_data, response_text)
     except Exception as e:
         logger.error(f"Error in process_product_telegram: {e}")
@@ -457,7 +490,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 processed_product_ids.add(product_id)
                 tasks.append(process_product_telegram(product_id, base_url, update, context))
 
-    if tasks: await asyncio.gather(*tasks)
+    if tasks: await asyncio.get_event_loop().create_task(asyncio.gather(*tasks))
     if loading_sticker_msg:
         try: await context.bot.delete_message(chat_id, loading_sticker_msg.message_id)
         except Exception: pass
@@ -477,10 +510,8 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Price Comparison Telegram bot polling...")
+    logger.info("Starting Fully Filtered Price Comparison Bot...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
-
-# --- END OF REAL PRICE COMPARISON BOT (4 CHEAPEST alternative LISTINGS) ---
