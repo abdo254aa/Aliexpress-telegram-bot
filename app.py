@@ -1,4 +1,4 @@
-# --- START OF ULTIMATE PRICE-LOCKED BOT (15% DISCOUNT RANGE) ---
+# --- START OF ULTIMATE PRICE-LOCKED BOT (12% DISCOUNT RANGE) ---
 
 import logging
 import os
@@ -102,7 +102,7 @@ resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
 # --- Helper Functions ---
 def extract_clean_price(price_raw) -> float:
-    """استخراج الرقم الحقيقي الصافي"""
+    """استخراج الرقم الحقيقي الصافي وتنظيفه من أي شوائب"""
     if not price_raw: return 0.0
     try:
         price_str = str(price_raw).replace(',', '.')
@@ -160,9 +160,9 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
         if p_price <= 0.1: 
             continue
 
-        # 🔥 [تم التعديل: حصار التخفيض بحد أقصى 15%] 🔥
-        # يسمح بهبوط السعر حتى 15% وصعوده حتى 10%
-        min_allowed_price = orig_price * 0.85  # خصم 15%
+        # 🔥 [تم التعديل الدقيق: حصار التخفيض بنسبة 12%] 🔥
+        # الحد الأدنى المسموح به هو السعر بعد خصم 12%، والحد الأعلى زيادة 10%
+        min_allowed_price = orig_price * 0.88  # خصم 12%
         max_allowed_price = orig_price * 1.10  # زيادة 10%
         
         if p_price < min_allowed_price or p_price > max_allowed_price:
@@ -434,7 +434,7 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         if orig_price_num <= 0.5:
              message_lines.append("<b>\n⚠️ لم نتمكن من التقاط سعر المنتج الأصلي لتصفية العروض بدقة، لذا تم إيقاف عرض البدائل لحمايتك.</b>")
         else:
-             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة بنسبة 15% ⬇️🤩\n</b>")
+             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة بنسبة 12% ⬇️🤩\n</b>")
              for offer in final_offers:
                  safe_link = html.escape(offer['link'])
                  message_lines.append(f"{offer['label']}\n{safe_link}\n")
@@ -504,10 +504,10 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Fully Locked Anti-Accessory Bot (15%)...")
+    logger.info("Starting Fully Locked Anti-Accessory Bot (12%)...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF ULTIMATE PRICE-LOCKED BOT (15% DISCOUNT RANGE) ---
+# --- END OF ULTIMATE PRICE-LOCKED BOT (12% DISCOUNT RANGE) ---
