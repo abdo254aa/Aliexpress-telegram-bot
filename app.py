@@ -1,4 +1,4 @@
-# --- START OF ULTIMATE PRICE-LOCKED BOT (12% DISCOUNT RANGE) ---
+# --- START OF ULTIMATE PRICE + IMAGE LOCKED BOT ---
 
 import logging
 import os
@@ -11,6 +11,11 @@ from urllib.parse import urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor
 import aiohttp
 from dotenv import load_dotenv
+
+# مكتبات معالجة ومطابقة الصور
+from PIL import Image
+import imagehash
+from io import BytesIO
 
 from telegram import Update
 from telegram.ext import (
@@ -37,17 +42,15 @@ TARGET_CURRENCY = os.getenv('TARGET_CURRENCY', 'USD')
 TARGET_LANGUAGE = os.getenv('TARGET_LANGUAGE', 'en')
 QUERY_COUNTRY = os.getenv('QUERY_COUNTRY', 'US')
 ALIEXPRESS_TRACKING_ID = os.getenv('ALIEXPRESS_TRACKING_ID', 'default')
-ALIEXPRESS_API_URL = 'https://api-sg.aliexpress.com/sync'
+ALIEXPRESS_API_URL = 'https://api-sg.conjugate.com/sync' if os.getenv('ALIEXPRESS_API_URL') is None else os.getenv('ALIEXPRESS_API_URL')
+if 'api-sg.aliexpress.com' not in ALIEXPRESS_API_URL and os.getenv('ALIEXPRESS_API_URL') is None:
+    ALIEXPRESS_API_URL = 'https://api-sg.aliexpress.com/sync'
+
 QUERY_FIELDS = 'product_main_image_url,target_sale_price,product_title,target_sale_price_currency'
-CACHE_EXPIRY_DAYS = 1
-CACHE_EXPIRY_SECONDS = CACHE_EXPIRY_DAYS * 24 * 60 * 60
+CACHE_EXPIRY_SECONDS = 1 * 24 * 60 * 60
 MAX_WORKERS = 10
 
-# --- Configure Logging ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 if not all([TELEGRAM_BOT_TOKEN, ALIEXPRESS_APP_KEY, ALIEXPRESS_APP_SECRET, ALIEXPRESS_TRACKING_ID]):
@@ -56,27 +59,23 @@ if not all([TELEGRAM_BOT_TOKEN, ALIEXPRESS_APP_KEY, ALIEXPRESS_APP_SECRET, ALIEX
 
 try:
     aliexpress_client = iop.IopClient(ALIEXPRESS_API_URL, ALIEXPRESS_APP_KEY, ALIEXPRESS_APP_SECRET)
-    logger.info("AliExpress API client initialized.")
 except Exception as e:
     logger.exception(f"Error initializing AliExpress API client: {e}")
     exit()
 
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-# --- REGEX definitions ---
 URL_REGEX = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+|\b(?:s\.click\.|a\.)?aliexpress\.(?:com|ru|es|fr|pt|it|pl|nl|co\.kr|co\.jp|com\.br|com\.tr|com\.vn|us|id|th|ar)(?:\.[\w-]+)?/[^\s<>"]*', re.IGNORECASE)
 PRODUCT_ID_REGEX = re.compile(r'/item/(\d+)\.html')
 STANDARD_ALIEXPRESS_DOMAIN_REGEX = re.compile(r'https?://(?!a\.|s\.click\.)([\w-]+\.)?aliexpress\.(com|ru|es|fr|pt|it|pl|nl|co\.kr|co\.jp|com\.br|com\.tr|com\.vn|us|id\.aliexpress\.com|th\.aliexpress\.com|ar\.aliexpress\.com)(\.([\w-]+))?(/.*)?', re.IGNORECASE)
 SHORT_LINK_DOMAIN_REGEX = re.compile(r'https?://(?:s\.click\.aliexpress\.com/e/|a\.aliexpress\.com/_)[a-zA-Z0-9_-]+/?', re.IGNORECASE)
 COMBINED_DOMAIN_REGEX = re.compile(r'aliexpress\.com|s\.click\.aliexpress\.com|a\.aliexpress\.com', re.IGNORECASE)
 
-# --- Cache Class ---
 class CacheWithExpiry:
     def __init__(self, expiry_seconds):
         self.cache = {}
         self.expiry_seconds = expiry_seconds
         self._lock = asyncio.Lock()
-
     async def get(self, key):
         async with self._lock:
             if key in self.cache:
@@ -84,10 +83,8 @@ class CacheWithExpiry:
                 if time.time() - timestamp < self.expiry_seconds: return item
                 else: del self.cache[key]
             return None
-
     async def set(self, key, value):
         async with self._lock: self.cache[key] = (value, time.time())
-
     async def clear_expired(self):
         async with self._lock:
             current_time = time.time()
@@ -100,9 +97,22 @@ product_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 link_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
-# --- Helper Functions ---
+# --- دالة استخراج بصمة الصورة الذكية ---
+async def get_image_hash(image_url: str, session: aiohttp.ClientSession) -> imagehash.ImageHash or None:
+    """تحميل الصورة وتحويلها إلى بصمة رقمية فريدة للمقارنة الفورية"""
+    if not image_url: return None
+    try:
+        async with session.get(image_url, timeout=8) as response:
+            if response.status == 200:
+                image_bytes = await response.read()
+                image = Image.open(BytesIO(image_bytes))
+                # استخدام Difference Hashing لمطابقة بصرية دقيقة وسريعة
+                return imagehash.dhash(image)
+    except Exception as e:
+        logger.error(f"Error hashing image {image_url}: {e}")
+    return None
+
 def extract_clean_price(price_raw) -> float:
-    """استخراج الرقم الحقيقي الصافي وتنظيفه من أي شوائب"""
     if not price_raw: return 0.0
     try:
         price_str = str(price_raw).replace(',', '.')
@@ -111,34 +121,31 @@ def extract_clean_price(price_raw) -> float:
             parts = clean_str.split('.')
             clean_str = parts[0] + '.' + ''.join(parts[1:])
         return float(clean_str) if clean_str else 0.0
-    except Exception:
-        return 0.0
+    except Exception: return 0.0
 
 def clean_keywords(title: str) -> str:
     title_clean = re.sub(r'\[.*?\]|\(.*?\)', '', title.lower())
     title_clean = re.sub(r'[^\w\s-]', ' ', title_clean)
     words = title_clean.split()
-    
     stop_words = {
         'with', 'for', 'from', 'and', 'the', 'new', 'original', 'version', 'global', 
         'shipping', 'free', 'led', 'lcd', 'to', 'official', 'store', 'brand', 'top', 
         'hot', 'sale', 'promotion', 'choice', 'high', 'quality', '2024', '2025', '2026',
         'in', 'on', 'at', 'by', 'an', 'a', 'of', 'fast', 'quick', 'charging', 'phone', 'compatible'
     }
-    
     filtered_words = [w for w in words if w not in stop_words and len(w) > 1]
-    
-    if len(filtered_words) >= 2:
-        return " ".join(filtered_words[:3])
+    if len(filtered_words) >= 2: return " ".join(filtered_words[:3])
     return " ".join(words[:3])
 
-def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_products: list, orig_id: str) -> list:
+# --- تطوير الفلتر ليدعم مطابقة السعر ومطابقة البصمة البصرية معاً ---
+async def filter_strict_alternatives_v3(orig_title: str, orig_price_raw, orig_image_url: str, search_products: list, orig_id: str, session: aiohttp.ClientSession) -> list:
     if not search_products: return []
     
     orig_price = extract_clean_price(orig_price_raw)
-    
-    if orig_price <= 0.5:
-        return []
+    if orig_price <= 0.5: return []
+
+    # جلب بصمة الصورة الأصلية أولاً
+    orig_hash = await get_image_hash(orig_image_url, session)
 
     valid_products = []
     seen_ids = set()
@@ -151,26 +158,32 @@ def filter_and_sort_alternatives(orig_title: str, orig_price_raw, search_product
 
     for p in search_products:
         p_id = str(p.get('product_id') or '')
-        if not p_id or p_id in seen_ids or p_id == orig_id:
-            continue
+        if not p_id or p_id in seen_ids or p_id == orig_id: continue
             
         p_title_lower = p.get('product_title', '').lower()
         p_price = extract_clean_price(p.get('target_sale_price'))
+        p_image_url = p.get('product_main_image_url')
         
-        if p_price <= 0.1: 
-            continue
+        if p_price <= 0.1: continue
 
-        # 🔥 [تم التعديل الدقيق: حصار التخفيض بنسبة 12%] 🔥
-        # الحد الأدنى المسموح به هو السعر بعد خصم 12%، والحد الأعلى زيادة 10%
+        # 1. فلتر السعر الحرج (12%)
         min_allowed_price = orig_price * 0.88  # خصم 12%
         max_allowed_price = orig_price * 1.10  # زيادة 10%
-        
-        if p_price < min_allowed_price or p_price > max_allowed_price:
-            continue
+        if p_price < min_allowed_price or p_price > max_allowed_price: continue
 
+        # 2. فلتر الكلمات المانعة الأساسي
         if any(neg in p_title_lower for neg in strict_negative_keywords):
-            if not any(neg in orig_title_lower for neg in strict_negative_keywords):
-                continue
+            if not any(neg in orig_title_lower for neg in strict_negative_keywords): continue
+
+        # 3. 🔥 [حصن الأمان البصري الفولاذي] 🔥
+        if orig_hash and p_image_url:
+            p_hash = await get_image_hash(p_image_url, session)
+            if p_hash:
+                # حساب الاختلاف بين البصمتين (كلما قل الرقم، زاد التطابق البصري)
+                # الاختلاف <= 14 يعني تطابق كبير جداً وممتاز في الصور لمنع الإكسسوارات
+                if (orig_hash - p_hash) > 14:
+                    logger.info(f"Product {p_id} rejected due to image mismatch hash distance: {orig_hash - p_hash}")
+                    continue
 
         valid_products.append(p)
         seen_ids.add(p_id)
@@ -218,7 +231,6 @@ async def periodic_cache_cleanup(context: ContextTypes.DEFAULT_TYPE):
     await link_cache.clear_expired()
     await resolved_url_cache.clear_expired()
 
-# --- Fetch Product Details ---
 async def fetch_product_details_v2(product_id: str) -> dict | None:
     cached_data = await product_cache.get(product_id)
     if cached_data: return cached_data
@@ -243,10 +255,8 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
         response_data = response.body
         if isinstance(response_data, str): response_data = json.loads(response_data)
         if 'error_response' in response_data: return None
-
         result = response_data.get('aliexpress_affiliate_productdetail_get_response', {}).get('resp_result', {})
         if result.get('resp_code') != 200: return None
-
         products = result.get('result', {}).get('products', {}).get('product', [])
         if not products:
             try:
@@ -272,8 +282,6 @@ async def fetch_product_details_v2(product_id: str) -> dict | None:
 
 async def fetch_alternative_cheapest_products(title: str, sort_mode: str = 'SALE_PRICE_ASC') -> list:
     cleaned_query = clean_keywords(title)
-    logger.info(f"Querying alternatives for: {cleaned_query} via sort: {sort_mode}")
-    
     def _execute_query_api():
         try:
             request = iop.IopRequest('aliexpress.affiliate.product.query')
@@ -283,14 +291,13 @@ async def fetch_alternative_cheapest_products(title: str, sort_mode: str = 'SALE
             request.add_api_param('tracking_id', ALIEXPRESS_TRACKING_ID)
             request.add_api_param('ship_to_country', QUERY_COUNTRY)
             request.add_api_param('sort', sort_mode)
-            request.add_api_param('page_size', '50')
+            request.add_api_param('page_size', '40')
             return aliexpress_client.execute(request)
         except Exception: return None
 
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(executor, _execute_query_api)
     if not response or not response.body: return []
-
     try:
         response_data = response.body
         if isinstance(response_data, str): response_data = json.loads(response_data)
@@ -303,7 +310,6 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
     results_dict = {url: await link_cache.get(url) for url in target_urls}
     uncached_urls = [url for url, cached in results_dict.items() if not cached]
     if not uncached_urls: return results_dict
-
     source_values_str = ",".join(uncached_urls)
     def _execute_batch_link_api():
         try:
@@ -317,19 +323,16 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(executor, _execute_batch_link_api)
     if not response or not response.body: return results_dict
-
     try:
         response_data = response.body
         if isinstance(response_data, str): response_data = json.loads(response_data)
         links_data = response_data.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
-        
         api_returned_links_map = {}
         for link_info in links_data:
             if isinstance(link_info, dict):
                 src = link_info.get('source_value')
                 promo = link_info.get('promotion_link')
                 if src and promo: api_returned_links_map[src] = promo
-
         for url in uncached_urls:
             if url in api_returned_links_map:
                 promo_link = api_returned_links_map[url]
@@ -338,71 +341,42 @@ async def generate_affiliate_links_batch(target_urls: list[str]) -> dict[str, st
         return results_dict
     except Exception: return results_dict
 
-# --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_message = """<b>👋 مرحبًا بك في بوت المقارنة الفولاذي لـ AliExpress!\n\n📋 أرسل رابط المنتج، وسنجلب لك الأسعار المطابقة بدقة بالغة!🚀</b>"""
-    await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
+    await update.message.reply_text("<b>👋 مرحبًا بك في بوت المقارنة البصري المطور لـ AliExpress!🚀</b>", parse_mode=ParseMode.HTML)
 
-async def _get_product_data(product_id: str) -> tuple[dict | None, str]:
-    product_details = await fetch_product_details_v2(product_id)
-    if product_details: return product_details, product_details.get('source', 'API')
-    return {'title': f"منتج {product_id}", 'image_url': None, 'price': None, 'currency': TARGET_CURRENCY, 'source': 'None'}, "None"
-
-async def _send_telegram_response(context: ContextTypes.DEFAULT_TYPE, chat_id: int, product_data: dict, message_text: str):
-    product_image = product_data.get('image_url')
-    try:
-        if product_image:
-            await context.bot.send_photo(chat_id=chat_id, photo=product_image, caption=message_text, parse_mode=ParseMode.HTML)
-        else:
-            await context.bot.send_message(chat_id=chat_id, text=message_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-    except Exception:
-        try: await context.bot.send_message(chat_id=chat_id, text=f"<b>⚠️ حدث خطأ أثناء إرسال الرسالة.</b>", parse_mode=ParseMode.HTML)
-        except Exception: pass
-
-async def process_product_telegram(product_id: str, base_url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_product_telegram(product_id: str, base_url: str, update: Update, context: ContextTypes.DEFAULT_TYPE, session: aiohttp.ClientSession):
     chat_id = update.effective_chat.id
     import html
     try:
-        product_data, details_source = await _get_product_data(product_id)
-        if not product_data or details_source == "None":
+        product_details = await fetch_product_details_v2(product_id)
+        if not product_details or product_details.get('source') == 'None':
              await context.bot.send_message(chat_id=chat_id, text=f"<b>❌ تعذر استرداد بيانات المنتج من AliExpress.</b>", parse_mode=ParseMode.HTML)
              return
 
-        title = product_data.get('title', 'منتج AliExpress')
-        orig_price_raw = product_data.get('price')
+        title = product_details.get('title', 'منتج AliExpress')
+        orig_price_raw = product_details.get('price')
+        orig_image_url = product_details.get('image_url')
         orig_price_num = extract_clean_price(orig_price_raw)
 
         raw_alternatives = await fetch_alternative_cheapest_products(title, sort_mode='SALE_PRICE_ASC')
-        filtered_alternatives = filter_and_sort_alternatives(title, orig_price_raw, raw_alternatives, product_id)
+        filtered_alternatives = await filter_strict_alternatives_v3(title, orig_price_raw, orig_image_url, raw_alternatives, product_id, session)
         
         if len(filtered_alternatives) < 3:
             raw_backups = await fetch_alternative_cheapest_products(title, sort_mode='VOLUME_HIGH_2_LOW')
-            backups_filtered = filter_and_sort_alternatives(title, orig_price_raw, raw_backups, product_id)
+            backups_filtered = await filter_strict_alternatives_v3(title, orig_price_raw, orig_image_url, raw_backups, product_id, session)
             for b in backups_filtered:
-                if b not in filtered_alternatives:
-                    filtered_alternatives.append(b)
+                if b not in filtered_alternatives: filtered_alternatives.append(b)
 
         final_offers_data = []
         for p in filtered_alternatives[:4]:
             p_url = p.get('product_detail_url')
             p_price = extract_clean_price(p.get('target_sale_price'))
-            
-            if p_url:
-                final_offers_data.append({
-                    "url": p_url,
-                    "price": p_price,
-                    "is_original": False
-                })
+            if p_url: final_offers_data.append({"url": p_url, "price": p_price, "is_original": False})
 
         if not any(item['url'] == base_url for item in final_offers_data):
-            final_offers_data.append({
-                "url": base_url,
-                "price": orig_price_num,
-                "is_original": True
-            })
+            final_offers_data.append({"url": base_url, "price": orig_price_num, "is_original": True})
 
         final_offers_data.sort(key=lambda x: x['price'] if x['price'] > 0 else 999999)
-
         urls_to_convert = [item['url'] for item in final_offers_data[:4]]
         generated_links_batch = await generate_affiliate_links_batch(urls_to_convert)
 
@@ -417,32 +391,29 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         for i, item in enumerate(final_offers_data[:4]):
             aff_link = generated_links_batch.get(item['url']) or item['url']
             price_display = f"{item['price']:.2f}" if item['price'] > 0 else "غير معروف"
-            
             if item.get('is_original'):
                 label_text = f"<b>📍 الرابط الأصلي الذي أرسلته أنت 🌟 بـ : ({price_display} $) 🔥</b>"
             else:
                 label_text = labels_pool[i].format(price_val=price_display)
-
-            final_offers.append({
-                "label": label_text,
-                "link": aff_link
-            })
+            final_offers.append({"label": label_text, "link": aff_link})
 
         message_lines = []
         product_title = html.escape(title)
         message_lines.append(f"<b>📝 إسم المنتج : {product_title[:250]}</b>")
         if orig_price_num <= 0.5:
-             message_lines.append("<b>\n⚠️ لم نتمكن من التقاط سعر المنتج الأصلي لتصفية العروض بدقة، لذا تم إيقاف عرض البدائل لحمايتك.</b>")
+             message_lines.append("<b>\n⚠️ لم نتمكن من التقاط سعر المنتج الأصلي لتصفية العروض بدقة.</b>")
         else:
-             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة بنسبة 12% ⬇️🤩\n</b>")
+             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة للسعر (12%) والصورة البصرية ⬇️🤩\n</b>")
              for offer in final_offers:
-                 safe_link = html.escape(offer['link'])
-                 message_lines.append(f"{offer['label']}\n{safe_link}\n")
+                 message_lines.append(f"{offer['label']}\n{html.escape(offer['link'])}\n")
             
         message_lines.append("<b>✅ شارك البوت مع أصدقائك ليستفيد الجميع⚡️🤖</b>")
-        response_text = "\n".join(message_lines)
         
-        await _send_telegram_response(context, chat_id, product_data, response_text)
+        if orig_image_url:
+            try: await context.bot.send_photo(chat_id=chat_id, photo=orig_image_url, caption="\n".join(message_lines), parse_mode=ParseMode.HTML)
+            except Exception: await context.bot.send_message(chat_id=chat_id, text="\n".join(message_lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(message_lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception as e:
         logger.error(f"Error in process_product_telegram: {e}")
 
@@ -450,7 +421,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.message or not update.message.text: return
     message_text = update.message.text
     chat_id = update.effective_chat.id
-
     potential_urls = extract_potential_aliexpress_urls(message_text)
     if not potential_urls: return
 
@@ -460,12 +430,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception: pass
 
     processed_product_ids = set()
-    tasks = []
     async with aiohttp.ClientSession() as session:
         for url in potential_urls:
             product_id = None
             base_url = None
-
             if not url.startswith(('http://', 'https://')):
                  if COMBINED_DOMAIN_REGEX.search(url): url = f"https://{url}"
                  else: continue
@@ -473,7 +441,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if STANDARD_ALIEXPRESS_DOMAIN_REGEX.match(url):
                 product_id = extract_product_id(url)
                 if product_id: base_url = clean_aliexpress_url(url, product_id)
-
             elif SHORT_LINK_DOMAIN_REGEX.match(url):
                 final_url = await resolve_short_link(url, session)
                 if final_url:
@@ -482,32 +449,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if product_id and base_url and product_id not in processed_product_ids:
                 processed_product_ids.add(product_id)
-                tasks.append(process_product_telegram(product_id, base_url, update, context))
+                await process_product_telegram(product_id, base_url, update, context, session)
 
-    if tasks: await asyncio.get_event_loop().create_task(asyncio.gather(*tasks))
     if loading_sticker_msg:
         try: await context.bot.delete_message(chat_id, loading_sticker_msg.message_id)
         except Exception: pass
 
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler((filters.TEXT | filters.FORWARDED) & ~filters.COMMAND & filters.Regex(COMBINED_DOMAIN_REGEX), handle_message))
-
-    async def non_aliexpress_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-         await context.bot.send_message(chat_id=update.effective_chat.id, text="<b>يرجى إرسال رابط منتج AliExpress لإنشاء تخفيضات له.</b>", parse_mode=ParseMode.HTML)
     
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(COMBINED_DOMAIN_REGEX), non_aliexpress_message))
-
     job_queue = application.job_queue
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Fully Locked Anti-Accessory Bot (12%)...")
+    logger.info("Starting Image + Price Locked Bot (12%)...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF ULTIMATE PRICE-LOCKED BOT (12% DISCOUNT RANGE) ---
+# --- END OF ULTIMATE PRICE + IMAGE LOCKED BOT ---
