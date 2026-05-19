@@ -1,4 +1,4 @@
-# --- START OF ULTIMATE PRICE + IMAGE LOCKED BOT ---
+# --- START OF ULTIMATE PRICE + IMAGE LOCKED BOT (FIXED & SECURED) ---
 
 import logging
 import os
@@ -42,9 +42,7 @@ TARGET_CURRENCY = os.getenv('TARGET_CURRENCY', 'USD')
 TARGET_LANGUAGE = os.getenv('TARGET_LANGUAGE', 'en')
 QUERY_COUNTRY = os.getenv('QUERY_COUNTRY', 'US')
 ALIEXPRESS_TRACKING_ID = os.getenv('ALIEXPRESS_TRACKING_ID', 'default')
-ALIEXPRESS_API_URL = 'https://api-sg.conjugate.com/sync' if os.getenv('ALIEXPRESS_API_URL') is None else os.getenv('ALIEXPRESS_API_URL')
-if 'api-sg.aliexpress.com' not in ALIEXPRESS_API_URL and os.getenv('ALIEXPRESS_API_URL') is None:
-    ALIEXPRESS_API_URL = 'https://api-sg.aliexpress.com/sync'
+ALIEXPRESS_API_URL = os.getenv('ALIEXPRESS_API_URL', 'https://api-sg.aliexpress.com/sync')
 
 QUERY_FIELDS = 'product_main_image_url,target_sale_price,product_title,target_sale_price_currency'
 CACHE_EXPIRY_SECONDS = 1 * 24 * 60 * 60
@@ -97,16 +95,19 @@ product_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 link_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 resolved_url_cache = CacheWithExpiry(CACHE_EXPIRY_SECONDS)
 
-# --- دالة استخراج بصمة الصورة الذكية ---
+# --- دالة استخراج بصمة الصورة الذكية (تم إصلاح ثغرة الرابط البديل) ---
 async def get_image_hash(image_url: str, session: aiohttp.ClientSession) -> imagehash.ImageHash or None:
-    """تحميل الصورة وتحويلها إلى بصمة رقمية فريدة للمقارنة الفورية"""
     if not image_url: return None
+    
+    # 🛠️ إصلاح فوري لروابط ألي إكسبريس التي تأتي بدون بروتوكول حماية
+    if image_url.startswith('//'):
+        image_url = 'https:' + image_url
+        
     try:
         async with session.get(image_url, timeout=8) as response:
             if response.status == 200:
                 image_bytes = await response.read()
                 image = Image.open(BytesIO(image_bytes))
-                # استخدام Difference Hashing لمطابقة بصرية دقيقة وسريعة
                 return imagehash.dhash(image)
     except Exception as e:
         logger.error(f"Error hashing image {image_url}: {e}")
@@ -134,19 +135,19 @@ def clean_keywords(title: str) -> str:
         'in', 'on', 'at', 'by', 'an', 'a', 'of', 'fast', 'quick', 'charging', 'phone', 'compatible'
     }
     filtered_words = [w for w in words if w not in stop_words and len(w) > 1]
-    if len(filtered_words) >= 2: return " ".join(filtered_words[:3])
-    return " ".join(words[:3])
+    
+    # 🛠️ تم زيادة الكلمات المفتاحية إلى 6 كلمات لضمان التقاط نوع المنتج (شاحن، كابل، إلخ)
+    if len(filtered_words) >= 2: return " ".join(filtered_words[:6])
+    return " ".join(words[:6])
 
-# --- تطوير الفلتر ليدعم مطابقة السعر ومطابقة البصمة البصرية معاً ---
+# --- نظام الفلترة الفولاذي المطور والمانع للإكسسوارات البديلة ---
 async def filter_strict_alternatives_v3(orig_title: str, orig_price_raw, orig_image_url: str, search_products: list, orig_id: str, session: aiohttp.ClientSession) -> list:
     if not search_products: return []
     
     orig_price = extract_clean_price(orig_price_raw)
     if orig_price <= 0.5: return []
 
-    # جلب بصمة الصورة الأصلية أولاً
     orig_hash = await get_image_hash(orig_image_url, session)
-
     valid_products = []
     seen_ids = set()
     orig_title_lower = orig_title.lower()
@@ -166,22 +167,30 @@ async def filter_strict_alternatives_v3(orig_title: str, orig_price_raw, orig_im
         
         if p_price <= 0.1: continue
 
-        # 1. فلتر السعر الحرج (12%)
-        min_allowed_price = orig_price * 0.88  # خصم 12%
-        max_allowed_price = orig_price * 1.10  # زيادة 10%
+        # 1. فلتر السعر الصارم (12%)
+        min_allowed_price = orig_price * 0.88  
+        max_allowed_price = orig_price * 1.10  
         if p_price < min_allowed_price or p_price > max_allowed_price: continue
 
-        # 2. فلتر الكلمات المانعة الأساسي
+        # 2. فلتر الكلمات المانعة الأساسية
         if any(neg in p_title_lower for neg in strict_negative_keywords):
             if not any(neg in orig_title_lower for neg in strict_negative_keywords): continue
 
-        # 3. 🔥 [حصن الأمان البصري الفولاذي] 🔥
+        # 3. 🛡️ فحص الفئة النصية الصارم (منع كابل يحاكي شاحن)
+        if 'charger' in orig_title_lower or 'شاحن' in orig_title_lower:
+            if not any(w in p_title_lower for w in ['charger', 'شاحن', 'adapter', 'power', 'gan', '🔌']):
+                continue
+
+        if 'cable' in orig_title_lower or 'كابل' in orig_title_lower or 'سلك' in orig_title_lower:
+            # إذا كان المنتج الأصلي عبارة عن كابل فقط، والبديل ليس فيه كابل
+            if not any(w in p_title_lower for w in ['cable', 'كابل', 'سلك', 'cord', 'line']):
+                continue
+
+        # 4. 👁️ حصن الأمان البصري المشدد (تم تضييق النطاق إلى 8 لمطابقة صارمة جداً)
         if orig_hash and p_image_url:
             p_hash = await get_image_hash(p_image_url, session)
             if p_hash:
-                # حساب الاختلاف بين البصمتين (كلما قل الرقم، زاد التطابق البصري)
-                # الاختلاف <= 14 يعني تطابق كبير جداً وممتاز في الصور لمنع الإكسسوارات
-                if (orig_hash - p_hash) > 14:
+                if (orig_hash - p_hash) > 8:
                     logger.info(f"Product {p_id} rejected due to image mismatch hash distance: {orig_hash - p_hash}")
                     continue
 
@@ -403,14 +412,16 @@ async def process_product_telegram(product_id: str, base_url: str, update: Updat
         if orig_price_num <= 0.5:
              message_lines.append("<b>\n⚠️ لم نتمكن من التقاط سعر المنتج الأصلي لتصفية العروض بدقة.</b>")
         else:
-             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة للسعر (12%) والصورة البصرية ⬇️🤩\n</b>")
+             message_lines.append("<b>\n🎯 تم جلب هذه الأسعار بمطابقة صارمة للسعر (12%) والفئة والصورة البصرية ⬇️🤩\n</b>")
              for offer in final_offers:
                  message_lines.append(f"{offer['label']}\n{html.escape(offer['link'])}\n")
             
         message_lines.append("<b>✅ شارك البوت مع أصدقائك ليستفيد الجميع⚡️🤖</b>")
         
         if orig_image_url:
-            try: await context.bot.send_photo(chat_id=chat_id, photo=orig_image_url, caption="\n".join(message_lines), parse_mode=ParseMode.HTML)
+            try: 
+                if orig_image_url.startswith('//'): orig_image_url = 'https:' + orig_image_url
+                await context.bot.send_photo(chat_id=chat_id, photo=orig_image_url, caption="\n".join(message_lines), parse_mode=ParseMode.HTML)
             except Exception: await context.bot.send_message(chat_id=chat_id, text="\n".join(message_lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         else:
             await context.bot.send_message(chat_id=chat_id, text="\n".join(message_lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -464,10 +475,10 @@ def main() -> None:
     job_queue.run_once(periodic_cache_cleanup, 60)
     job_queue.run_repeating(periodic_cache_cleanup, interval=timedelta(days=1), first=timedelta(days=1))
 
-    logger.info("Starting Image + Price Locked Bot (12%)...")
+    logger.info("Starting Fixed Image + Price Locked Bot (12%)...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
 
-# --- END OF ULTIMATE PRICE + IMAGE LOCKED BOT ---
+# --- END OF ULTIMATE PRICE + IMAGE LOCKED BOT (FIXED & SECURED) ---
